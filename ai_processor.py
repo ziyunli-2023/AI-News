@@ -65,6 +65,77 @@ def translate_batch(posts: list[dict]) -> list[dict]:
         return [{}] * len(posts)
 
 
+def generate_daily_briefing(posts_by_category: dict) -> dict:
+    """
+    Generate a structured daily briefing with bullet points per category.
+    Input: {category: [post_dicts]} from storage.get_recent_posts_by_category()
+    Returns: {"sections": [{"category": str, "label": str, "icon": str, "points": [str]}]}
+    """
+    if not config.DEEPSEEK_API_KEY:
+        return {"sections": []}
+
+    CATEGORY_META = {
+        "ai":       {"label": "AI 前沿",  "icon": "🤖"},
+        "web3":     {"label": "Web3",     "icon": "⛓️"},
+        "venture":  {"label": "创投圈",   "icon": "💰"},
+        "us_stock": {"label": "美股",     "icon": "🇺🇸"},
+        "hk_stock": {"label": "港股",     "icon": "🇭🇰"},
+    }
+
+    # Build news text per category
+    sections_input = []
+    for cat, meta in CATEGORY_META.items():
+        posts = posts_by_category.get(cat, [])
+        if not posts:
+            sections_input.append(f"【{meta['label']}】暂无数据")
+            continue
+        lines = [f"【{meta['label']}】"]
+        for p in posts[:8]:
+            lines.append(f"- {p.get('title_zh') or p.get('title', '')}")
+        sections_input.append("\n".join(lines))
+
+    news_text = "\n\n".join(sections_input)
+
+    prompt = f"""以下是今日各板块的最新资讯标题：
+
+{news_text}
+
+请为每个板块生成 3~4 条要点，要求：
+- 每条要点 30 字以内，简洁直接
+- 重点突出具体事件、数字、名称
+- 没有数据的板块输出"暂无重要动态"
+- 严格按以下 JSON 格式返回，不要添加其他内容：
+
+{{"sections": [
+  {{"category": "ai",       "points": ["...", "...", "..."]}},
+  {{"category": "web3",     "points": ["...", "...", "..."]}},
+  {{"category": "venture",  "points": ["...", "...", "..."]}},
+  {{"category": "us_stock", "points": ["...", "...", "..."]}},
+  {{"category": "hk_stock", "points": ["...", "...", "..."]}}
+]}}"""
+
+    try:
+        resp = _get_client().chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1000,
+            temperature=0.4,
+        )
+        raw = resp.choices[0].message.content.strip()
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        data = json.loads(raw[start:end])
+        # Attach label/icon metadata
+        for sec in data.get("sections", []):
+            meta = CATEGORY_META.get(sec["category"], {})
+            sec["label"] = meta.get("label", sec["category"])
+            sec["icon"] = meta.get("icon", "📌")
+        return data
+    except Exception as e:
+        logger.error("generate_daily_briefing failed: %s", e)
+        return {"sections": []}
+
+
 def generate_digest_summary(items: list[dict]) -> str:
     """
     Generate a ~200-word Chinese summary of a batch of news items.

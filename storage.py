@@ -18,6 +18,15 @@ def get_conn():
         conn.close()
 
 
+def _migrate(conn):
+    """Add columns introduced after initial schema."""
+    try:
+        conn.execute("ALTER TABLE blog_posts ADD COLUMN category TEXT")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
+
+
 def init_db():
     with get_conn() as conn:
         conn.executescript("""
@@ -48,6 +57,7 @@ def init_db():
                 content_hash  TEXT,
                 title_zh      TEXT,
                 summary_zh    TEXT,
+                category      TEXT,
                 fetched_at    TEXT NOT NULL
             );
 
@@ -74,6 +84,8 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_posts_priority   ON blog_posts(feed_priority);
             CREATE INDEX IF NOT EXISTS idx_posts_hash       ON blog_posts(content_hash);
         """)
+        _migrate(conn)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_category ON blog_posts(category)")
 
 
 def _content_hash(title: str) -> str:
@@ -205,8 +217,8 @@ def save_post(post: dict) -> bool:
         try:
             conn.execute(
                 """INSERT INTO blog_posts
-                   (id, source, title, url, summary, published, feed_priority, content_hash, fetched_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, source, title, url, summary, published, feed_priority, content_hash, category, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     post["id"],
                     post["source"],
@@ -216,6 +228,7 @@ def save_post(post: dict) -> bool:
                     post.get("published", ""),
                     post.get("feed_priority", 2),
                     ch,
+                    post.get("category", "ai"),
                     datetime.utcnow().isoformat(),
                 ),
             )
@@ -305,6 +318,23 @@ def search_news(query: str, limit: int = 20, source_type: str = "all") -> list[d
             ).fetchall()
             results.extend([dict(r) for r in rows])
     return results[:limit]
+
+
+def get_recent_posts_by_category(hours: int = 24, limit_per_category: int = 10) -> dict[str, list[dict]]:
+    """Return recent posts grouped by category for the daily briefing."""
+    cutoff = datetime.utcfromtimestamp(datetime.utcnow().timestamp() - hours * 3600).isoformat()
+    categories = ["ai", "web3", "venture", "us_stock", "hk_stock"]
+    result = {}
+    with get_conn() as conn:
+        for cat in categories:
+            rows = conn.execute(
+                """SELECT * FROM blog_posts
+                   WHERE category=? AND (published >= ? OR fetched_at >= ?)
+                   ORDER BY published DESC LIMIT ?""",
+                (cat, cutoff, cutoff, limit_per_category),
+            ).fetchall()
+            result[cat] = [dict(r) for r in rows]
+    return result
 
 
 def get_stats() -> dict:

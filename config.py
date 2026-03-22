@@ -63,32 +63,54 @@ X_NOISE_KEYWORDS = {
 # ── RSS feeds ──────────────────────────────────────────────────────────────
 # Each entry: name, url, tier (1/2/3), is_arxiv (optional)
 RSS_FEEDS = [
-    # Tier 1 — Lab blogs + deep newsletters (poll every 30 min)
-    {"name": "OpenAI",        "url": "https://openai.com/news/rss.xml",                                                                    "tier": 1},
-    {"name": "Anthropic",     "url": "https://raw.githubusercontent.com/0xSMW/rss-feeds/main/feeds/feed_anthropic_news.xml",               "tier": 1},
-    {"name": "Google DeepMind","url": "https://deepmind.google/blog/rss.xml",                                                              "tier": 1},
-    {"name": "Hugging Face",  "url": "https://huggingface.co/blog/feed.xml",                                                               "tier": 1},
-    {"name": "Import AI",     "url": "https://importai.substack.com/feed",                                                                 "tier": 1},
-    {"name": "Interconnects", "url": "https://www.interconnects.ai/feed",                                                                  "tier": 1},
-    {"name": "Ahead of AI",   "url": "https://magazine.sebastianraschka.com/feed",                                                         "tier": 1},
-    {"name": "The Batch",     "url": "https://www.deeplearning.ai/the-batch/feed.xml",                                                     "tier": 1},
-    # Tier 2 — Research & industry blogs (poll every 60 min)
-    {"name": "Google AI",     "url": "https://blog.google/technology/ai/rss/",                                                             "tier": 2},
-    {"name": "Google Research","url": "https://research.google/blog/rss/",                                                                 "tier": 2},
-    {"name": "AWS ML",        "url": "https://aws.amazon.com/blogs/machine-learning/feed/",                                                "tier": 2},
-    {"name": "BAIR",          "url": "https://bair.berkeley.edu/blog/feed.xml",                                                            "tier": 2},
-    {"name": "Last Week in AI","url": "https://lastweekin.ai/feed",                                                                        "tier": 2},
-    {"name": "Marcus on AI",  "url": "https://garymarcus.substack.com/feed",                                                               "tier": 2},
-    {"name": "Chollet Substack","url": "https://fchollet.substack.com/feed",                                                               "tier": 2},
-    {"name": "The Decoder",   "url": "https://the-decoder.com/feed/",                                                                      "tier": 2},
-    # Tier 3 — High-volume news sites (poll every 2 hr, keyword-filtered)
-    {"name": "VentureBeat AI","url": "https://venturebeat.com/category/ai/feed/",                                                          "tier": 3},
-    {"name": "The Verge AI",  "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",                                  "tier": 3},
-    {"name": "Wired AI",      "url": "https://www.wired.com/feed/tag/ai/latest/rss",                                                       "tier": 3},
-    {"name": "Towards Data Science","url": "https://towardsdatascience.com/feed/",                                                         "tier": 3},
-    # ArXiv — keyword-filtered, separate handling
-    {"name": "arXiv cs.AI",   "url": "http://arxiv.org/rss/cs.AI",  "tier": 2, "is_arxiv": True},
-    {"name": "arXiv cs.LG",   "url": "http://arxiv.org/rss/cs.LG",  "tier": 2, "is_arxiv": True},
+    # ── AI — Lab blogs + deep newsletters (Tier 1, poll every 30 min) ──────
+    {"name": "OpenAI",             "url": "https://openai.com/news/rss.xml",                                                                   "tier": 1, "category": "ai"},
+    {"name": "Anthropic",          "url": "https://raw.githubusercontent.com/0xSMW/rss-feeds/main/feeds/feed_anthropic_news.xml",              "tier": 1, "category": "ai"},
+    {"name": "Google DeepMind",    "url": "https://deepmind.google/blog/rss.xml",                                                              "tier": 1, "category": "ai"},
+    {"name": "Hugging Face",       "url": "https://huggingface.co/blog/feed.xml",                                                              "tier": 1, "category": "ai"},
+    {"name": "Import AI",          "url": "https://importai.substack.com/feed",                                                                "tier": 1, "category": "ai"},
+    {"name": "Interconnects",      "url": "https://www.interconnects.ai/feed",                                                                 "tier": 1, "category": "ai"},
+    {"name": "Ahead of AI",        "url": "https://magazine.sebastianraschka.com/feed",                                                        "tier": 1, "category": "ai"},
+    {"name": "The Batch",          "url": "https://www.deeplearning.ai/the-batch/feed.xml",                                                    "tier": 1, "category": "ai"},
+    # ── AI — Research & industry blogs (Tier 2, poll every 60 min) ─────────
+    {"name": "Google AI",          "url": "https://blog.google/technology/ai/rss/",                                                            "tier": 2, "category": "ai"},
+    {"name": "Google Research",    "url": "https://research.google/blog/rss/",                                                                 "tier": 2, "category": "ai"},
+    {"name": "AWS ML",             "url": "https://aws.amazon.com/blogs/machine-learning/feed/",                                               "tier": 2, "category": "ai"},
+    {"name": "BAIR",               "url": "https://bair.berkeley.edu/blog/feed.xml",                                                           "tier": 2, "category": "ai"},
+    {"name": "Last Week in AI",    "url": "https://lastweekin.ai/feed",                                                                        "tier": 2, "category": "ai"},
+    {"name": "Marcus on AI",       "url": "https://garymarcus.substack.com/feed",                                                              "tier": 2, "category": "ai"},
+    {"name": "Chollet Substack",   "url": "https://fchollet.substack.com/feed",                                                                "tier": 2, "category": "ai"},
+    {"name": "The Decoder",        "url": "https://the-decoder.com/feed/",                                                                     "tier": 2, "category": "ai"},
+    # ── AI — High-volume news sites (Tier 3, poll every 2 hr) ───────────────
+    {"name": "VentureBeat AI",     "url": "https://venturebeat.com/category/ai/feed/",                                                         "tier": 3, "category": "ai"},
+    {"name": "The Verge AI",       "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",                                 "tier": 3, "category": "ai"},
+    {"name": "Wired AI",           "url": "https://www.wired.com/feed/tag/ai/latest/rss",                                                      "tier": 3, "category": "ai"},
+    {"name": "Towards Data Science","url": "https://towardsdatascience.com/feed/",                                                             "tier": 3, "category": "ai"},
+    # ── AI — ArXiv (keyword-filtered) ───────────────────────────────────────
+    {"name": "arXiv cs.AI",        "url": "http://arxiv.org/rss/cs.AI",  "tier": 2, "category": "ai", "is_arxiv": True},
+    {"name": "arXiv cs.LG",        "url": "http://arxiv.org/rss/cs.LG",  "tier": 2, "category": "ai", "is_arxiv": True},
+
+    # ── Web3 / Crypto (poll every 60 min) ───────────────────────────────────
+    {"name": "CoinDesk",           "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",                                                   "tier": 2, "category": "web3"},
+    {"name": "CoinTelegraph",      "url": "https://cointelegraph.com/rss",                                                                     "tier": 2, "category": "web3"},
+    {"name": "The Block",          "url": "https://www.theblock.co/rss.xml",                                                                   "tier": 2, "category": "web3"},
+    {"name": "Decrypt",            "url": "https://decrypt.co/feed",                                                                           "tier": 2, "category": "web3"},
+
+    # ── 创投圈 / Venture (poll every 60 min) ─────────────────────────────────
+    {"name": "TechCrunch",         "url": "https://techcrunch.com/feed/",                                                                      "tier": 2, "category": "venture"},
+    {"name": "Crunchbase News",    "url": "https://news.crunchbase.com/feed/",                                                                 "tier": 2, "category": "venture"},
+    {"name": "StrictlyVC",         "url": "https://strictlyvc.com/feed/",                                                                      "tier": 2, "category": "venture"},
+
+    # ── 美股 / US Stocks (poll every 60 min) ────────────────────────────────
+    {"name": "MarketWatch",        "url": "https://feeds.marketwatch.com/marketwatch/topstories/",                                             "tier": 2, "category": "us_stock"},
+    {"name": "CNBC Markets",       "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html",                                              "tier": 2, "category": "us_stock"},
+    {"name": "Reuters Business",   "url": "https://feeds.reuters.com/reuters/businessNews",                                                    "tier": 2, "category": "us_stock"},
+    {"name": "Seeking Alpha",      "url": "https://seekingalpha.com/feed.xml",                                                                 "tier": 3, "category": "us_stock"},
+
+    # ── 港股 / HK & China Markets (poll every 60 min) ───────────────────────
+    {"name": "SCMP Business",      "url": "https://www.scmp.com/rss/2/feed",                                                                   "tier": 2, "category": "hk_stock"},
+    {"name": "Nikkei Asia",        "url": "https://asia.nikkei.com/rss/feed/nar",                                                              "tier": 2, "category": "hk_stock"},
+    {"name": "Reuters Asia",       "url": "https://feeds.reuters.com/reuters/AsiaNews",                                                        "tier": 2, "category": "hk_stock"},
 ]
 
 # Keywords for ArXiv filtering (only store papers matching at least one)
