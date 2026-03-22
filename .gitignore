@@ -1,0 +1,30 @@
+# Credentials & secrets — NEVER commit
+.env
+
+# Database (user-specific scraped data)
+news.db
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Claude Code
+.claude/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
