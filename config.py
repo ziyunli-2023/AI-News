@@ -105,10 +105,9 @@ RSS_FEEDS = [
     {"name": "MarketWatch",        "url": "https://feeds.marketwatch.com/marketwatch/topstories/",                                             "tier": 2, "category": "us_stock"},
     {"name": "CNBC Markets",       "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html",                                              "tier": 2, "category": "us_stock"},
     {"name": "Reuters Business",   "url": "https://feeds.reuters.com/reuters/businessNews",                                                    "tier": 2, "category": "us_stock"},
-    {"name": "Seeking Alpha",      "url": "https://seekingalpha.com/feed.xml",                                                                 "tier": 3, "category": "us_stock"},
 
     # ── 港股 / HK & China Markets (poll every 60 min) ───────────────────────
-    {"name": "SCMP Business",      "url": "https://www.scmp.com/rss/2/feed",                                                                   "tier": 2, "category": "hk_stock"},
+
     {"name": "Nikkei Asia",        "url": "https://asia.nikkei.com/rss/feed/nar",                                                              "tier": 2, "category": "hk_stock"},
     {"name": "Reuters Asia",       "url": "https://feeds.reuters.com/reuters/AsiaNews",                                                        "tier": 2, "category": "hk_stock"},
 ]
