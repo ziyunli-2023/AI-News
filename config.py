@@ -17,39 +17,42 @@ X_POLL_INTERVAL = 1800  # 30 min
 # RSS tiered intervals (seconds) by tier level
 RSS_POLL_INTERVALS = {1: 1800, 2: 3600, 3: 7200}
 
-# ── Tracked X accounts (Free tier: Priority 1 only = 8 accounts) ──────────
+# ── Tracked X accounts ─────────────────────────────────────────────────────
 # Each entry: username, priority (1/2/3), category
+# NOTE: X monitor requires Basic tier ($100/mo). Active accounts listed here
+# are ready to enable once API access is upgraded.
 TRACKED_X_USERS = [
-    {"username": "karpathy",    "priority": 1, "category": "researcher"},  # Andrej Karpathy
-    {"username": "DarioAmodei", "priority": 1, "category": "founder"},     # Dario Amodei
-    {"username": "sama",        "priority": 1, "category": "founder"},     # Sam Altman
-    {"username": "ilyasut",     "priority": 1, "category": "researcher"},  # Ilya Sutskever
-    {"username": "fchollet",    "priority": 1, "category": "researcher"},  # François Chollet
-    {"username": "ch402",       "priority": 1, "category": "researcher"},  # Chris Olah
-    {"username": "Thom_Wolf",   "priority": 1, "category": "researcher"},  # Thomas Wolf
-    {"username": "natolambert", "priority": 1, "category": "researcher"},  # Nathan Lambert
-    # ── Upgrade to Basic tier ($100/mo) to enable the accounts below ──────
-    # {"username": "demishassabis",  "priority": 2, "category": "founder"},
-    # {"username": "gdb",            "priority": 2, "category": "founder"},
-    # {"username": "AravSrinivas",   "priority": 2, "category": "founder"},
-    # {"username": "JeffDean",       "priority": 2, "category": "researcher"},
-    # {"username": "soumithchintala","priority": 2, "category": "researcher"},
-    # {"username": "DrJimFan",       "priority": 2, "category": "researcher"},
-    # {"username": "jackclarkSF",    "priority": 2, "category": "researcher"},
-    # {"username": "OfficialLoganK", "priority": 2, "category": "practitioner"},
-    # {"username": "paulfchristiano","priority": 2, "category": "safety"},
-    # {"username": "tegmark",        "priority": 2, "category": "safety"},
-    # {"username": "AndrewYNg",      "priority": 2, "category": "academic"},
-    # {"username": "drfeifei",       "priority": 2, "category": "academic"},
-    # {"username": "rasbt",          "priority": 2, "category": "academic"},
-    # {"username": "emollick",       "priority": 2, "category": "academic"},
-    # {"username": "chipro",         "priority": 2, "category": "practitioner"},
-    # {"username": "alliekmiller",   "priority": 2, "category": "practitioner"},
-    # {"username": "lexfridman",     "priority": 2, "category": "practitioner"},
-    # {"username": "ylecun",         "priority": 3, "category": "researcher"},
-    # {"username": "GaryMarcus",     "priority": 3, "category": "academic"},
-    # {"username": "ESYudkowsky",    "priority": 3, "category": "safety"},
-    # {"username": "rowancheung",    "priority": 3, "category": "practitioner"},
+    # ── AI 圈 行业领袖 ──────────────────────────────────────────────────────
+    {"username": "sama",           "priority": 1, "category": "founder"},     # Sam Altman
+    {"username": "DarioAmodei",    "priority": 1, "category": "founder"},     # Dario Amodei
+    {"username": "demishassabis",  "priority": 1, "category": "founder"},     # Demis Hassabis
+    {"username": "ylecun",         "priority": 1, "category": "researcher"},  # Yann LeCun
+    {"username": "AndrewYNg",      "priority": 1, "category": "academic"},    # Andrew Ng
+    # ── AI 圈 开源/教育 ─────────────────────────────────────────────────────
+    {"username": "karpathy",       "priority": 1, "category": "researcher"},  # Andrej Karpathy
+    {"username": "jeremyphoward",  "priority": 2, "category": "academic"},    # Jeremy Howard
+    # ── AI 圈 投资人 ────────────────────────────────────────────────────────
+    {"username": "paulg",          "priority": 2, "category": "investor"},    # Paul Graham
+    {"username": "eladgil",        "priority": 2, "category": "investor"},    # Elad Gil
+    {"username": "garrytan",       "priority": 2, "category": "investor"},    # Garry Tan
+    # ── Web3 圈 行业领袖 ────────────────────────────────────────────────────
+    {"username": "VitalikButerin", "priority": 1, "category": "web3"},        # Vitalik Buterin
+    {"username": "brian_armstrong","priority": 2, "category": "web3"},        # Brian Armstrong
+    {"username": "cz_binance",     "priority": 2, "category": "web3"},        # CZ
+    # ── Web3 圈 技术开发者 ──────────────────────────────────────────────────
+    {"username": "haydenzadams",   "priority": 2, "category": "web3"},        # Hayden Adams (Uniswap)
+    {"username": "AndreCronjeTech","priority": 2, "category": "web3"},        # Andre Cronje
+    {"username": "StaniKulechov",  "priority": 2, "category": "web3"},        # Stani Kulechov (Aave)
+    # ── Web3 圈 投资人 ──────────────────────────────────────────────────────
+    {"username": "cdixon",         "priority": 2, "category": "web3"},        # Chris Dixon (a16z)
+    {"username": "naval",          "priority": 2, "category": "web3"},        # Naval Ravikant
+    {"username": "balajis",        "priority": 2, "category": "web3"},        # Balaji Srinivasan
+    {"username": "fehrsam",        "priority": 2, "category": "web3"},        # Fred Ehrsam (Paradigm)
+    # ── Web3 圈 KOL/媒体 ────────────────────────────────────────────────────
+    {"username": "RyanSAdams",     "priority": 3, "category": "web3"},        # Ryan Sean Adams (Bankless)
+    {"username": "TrustlessState", "priority": 3, "category": "web3"},        # David Hoffman (Bankless)
+    {"username": "sassal0x",       "priority": 3, "category": "web3"},        # Anthony Sassano
+    {"username": "laurashin",      "priority": 3, "category": "web3"},        # Laura Shin
 ]
 
 # Keywords used to filter Priority-3 accounts (only save if tweet contains one)
@@ -63,10 +66,14 @@ X_NOISE_KEYWORDS = {
 # ── RSS feeds ──────────────────────────────────────────────────────────────
 # Each entry: name, url, tier (1/2/3), is_arxiv (optional)
 RSS_FEEDS = [
+    # ── AI — Personal blogs (Tier 1, poll every 30 min) ────────────────────
+    {"name": "Sam Altman",         "url": "https://blog.samaltman.com/posts.atom",                                                             "tier": 1, "category": "ai"},
+    {"name": "Paul Graham",        "url": "https://paulgraham.com/rss.html",                                                                   "tier": 1, "category": "ai"},
     # ── AI — Lab blogs + deep newsletters (Tier 1, poll every 30 min) ──────
     {"name": "OpenAI",             "url": "https://openai.com/news/rss.xml",                                                                   "tier": 1, "category": "ai"},
     {"name": "Anthropic",          "url": "https://raw.githubusercontent.com/0xSMW/rss-feeds/main/feeds/feed_anthropic_news.xml",              "tier": 1, "category": "ai"},
     {"name": "Google DeepMind",    "url": "https://deepmind.google/blog/rss.xml",                                                              "tier": 1, "category": "ai"},
+    {"name": "Meta AI",            "url": "https://ai.meta.com/blog/rss/",                                                                     "tier": 1, "category": "ai"},
     {"name": "Hugging Face",       "url": "https://huggingface.co/blog/feed.xml",                                                              "tier": 1, "category": "ai"},
     {"name": "Import AI",          "url": "https://importai.substack.com/feed",                                                                "tier": 1, "category": "ai"},
     {"name": "Interconnects",      "url": "https://www.interconnects.ai/feed",                                                                 "tier": 1, "category": "ai"},
@@ -97,6 +104,8 @@ RSS_FEEDS = [
     {"name": "Decrypt",            "url": "https://decrypt.co/feed",                                                                           "tier": 2, "category": "web3"},
 
     # ── 创投圈 / Venture (poll every 60 min) ─────────────────────────────────
+    {"name": "Y Combinator",       "url": "https://www.ycombinator.com/blog/rss.xml",                                                          "tier": 1, "category": "venture"},
+    {"name": "a16z",               "url": "https://a16z.com/feed/",                                                                            "tier": 1, "category": "venture"},
     {"name": "TechCrunch",         "url": "https://techcrunch.com/feed/",                                                                      "tier": 2, "category": "venture"},
     {"name": "Crunchbase News",    "url": "https://news.crunchbase.com/feed/",                                                                 "tier": 2, "category": "venture"},
     {"name": "StrictlyVC",         "url": "https://strictlyvc.com/feed/",                                                                      "tier": 2, "category": "venture"},
@@ -106,10 +115,10 @@ RSS_FEEDS = [
     {"name": "CNBC Markets",       "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html",                                              "tier": 2, "category": "us_stock"},
     {"name": "Reuters Business",   "url": "https://feeds.reuters.com/reuters/businessNews",                                                    "tier": 2, "category": "us_stock"},
 
-    # ── 港股 / HK & China Markets (poll every 60 min) ───────────────────────
-
-    {"name": "Nikkei Asia",        "url": "https://asia.nikkei.com/rss/feed/nar",                                                              "tier": 2, "category": "hk_stock"},
-    {"name": "Reuters Asia",       "url": "https://feeds.reuters.com/reuters/AsiaNews",                                                        "tier": 2, "category": "hk_stock"},
+    # ── Web3 圈官方博客 (poll every 60 min) ─────────────────────────────────
+    {"name": "a16z Crypto",        "url": "https://a16zcrypto.com/feed/",                                                                      "tier": 1, "category": "web3"},
+    {"name": "Paradigm",           "url": "https://www.paradigm.xyz/feed.xml",                                                                 "tier": 2, "category": "web3"},
+    {"name": "CoinCenter",         "url": "https://coincenter.org/feed",                                                                       "tier": 2, "category": "web3"},
 ]
 
 # Keywords for ArXiv filtering (only store papers matching at least one)
