@@ -152,13 +152,17 @@ class EmailNotifier:
     <span style='font-size:13px;color:#555;'>📰 {len(posts)} blog posts &nbsp;&nbsp; 🐦 {len(tweets)} tweets</span>
   </div>
 """)
-        # Digest summary block
+        # Digest summary block — bullet points, one per line
         if digest_summary:
+            bullets_html = "".join(
+                f"<li style='margin:6px 0;font-size:14px;color:#333;line-height:1.6;'>{b}</li>"
+                for b in digest_summary
+            )
             html_parts.append(f"""
   <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;
               padding:16px 20px;margin-bottom:24px;'>
-    <div style='font-size:12px;font-weight:600;color:#92400e;margin-bottom:8px;'>📋 今日 AI 资讯摘要</div>
-    <p style='margin:0;font-size:14px;color:#333;line-height:1.7;'>{digest_summary}</p>
+    <div style='font-size:12px;font-weight:600;color:#92400e;margin-bottom:10px;'>📋 今日 AI 资讯摘要</div>
+    <ul style='margin:0;padding-left:20px;'>{bullets_html}</ul>
   </div>
 """)
 

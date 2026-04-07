@@ -614,7 +614,18 @@ async function loadDigest() {
   el.textContent = '正在生成摘要…';
   try {
     const data = await fetch('/api/digest-summary').then(r => r.json());
-    el.textContent = data.summary || '暂无摘要';
+    const bullets = Array.isArray(data.summary) ? data.summary : [];
+    if (!bullets.length) { el.textContent = '暂无摘要'; return; }
+    el.textContent = '';
+    const ul = document.createElement('ul');
+    ul.style.margin = '0'; ul.style.paddingLeft = '20px';
+    bullets.forEach(b => {
+      const li = document.createElement('li');
+      li.style.margin = '6px 0'; li.style.lineHeight = '1.6';
+      li.textContent = b;
+      ul.appendChild(li);
+    });
+    el.appendChild(ul);
   } catch(e) { el.textContent = '摘要生成失败'; }
 }
 

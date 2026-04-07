@@ -183,14 +183,14 @@ def generate_daily_briefing(posts_by_category: dict) -> dict:
         return {"sections": []}
 
 
-def generate_digest_summary(items: list[dict]) -> str:
+def generate_digest_summary(items: list[dict]) -> list[str]:
     """
-    Generate a ~200-word Chinese summary of a batch of news items.
-    Input: list of {"type": "post"|"tweet", "data": {...}} dicts.
-    Returns: Chinese summary string, or "" on failure.
+    Generate a bullet-point Chinese digest of a batch of news items.
+    Input: list of {"type": "post"|"tweet", "item"|"data": {...}} dicts.
+    Returns: list of short Chinese bullets (3-6 points), or [] on failure.
     """
     if not config.DEEPSEEK_API_KEY or not items:
-        return ""
+        return []
 
     lines = []
     for item in items[:30]:
@@ -206,17 +206,27 @@ def generate_digest_summary(items: list[dict]) -> str:
 
 {news_list}
 
-请用200字以内的简体中文写一段综述，指出3个最重要的进展或话题，语言简洁专业。
-直接输出段落，不要标题、不要序号。"""
+请用简体中文提炼出 3-6 个最重要的看点，每个看点一行，独立成条，语言简洁专业。
+要求：
+- 每条 30 字以内
+- 每条聚焦一个具体进展/话题，不要泛泛而谈
+- 严格按以下 JSON 数组格式返回，不要任何额外文字：
+["看点1", "看点2", "看点3"]"""
 
     try:
         resp = _get_client().chat.completions.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
+            max_tokens=600,
             temperature=0.5,
         )
-        return resp.choices[0].message.content.strip()
+        raw = resp.choices[0].message.content.strip()
+        start = raw.find("[")
+        end = raw.rfind("]") + 1
+        if start == -1 or end == 0:
+            raise ValueError("No JSON array in response")
+        bullets = json.loads(raw[start:end])
+        return [str(b).strip() for b in bullets if str(b).strip()]
     except Exception as e:
         logger.error("generate_digest_summary failed: %s", e)
-        return ""
+        return []
