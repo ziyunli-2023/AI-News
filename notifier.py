@@ -10,11 +10,60 @@ from email.mime.text import MIMEText
 
 import config
 import ai_processor
+import storage
 
 logger = logging.getLogger(__name__)
 
 # Send digest at these hours (local time)
 SEND_HOURS = {9, 20}
+
+
+def _ensure_translations(posts: list[dict], tweets: list[dict]):
+    """
+    Make sure every post has title_zh/summary_zh and every tweet has text_zh.
+    Calls DeepSeek for any missing pieces and persists results to SQLite so the
+    web UI sees the same translations next time.
+    """
+    if not config.DEEPSEEK_API_KEY:
+        return
+
+    # Posts: collect missing title + summary in a flat list, translate, scatter back
+    post_targets = []  # list of (post_dict, field_name, original_text)
+    for b in posts:
+        p = b["item"]
+        if not p.get("title_zh") and p.get("title"):
+            post_targets.append((p, "title_zh", p["title"]))
+        if not p.get("summary_zh") and p.get("summary"):
+            post_targets.append((p, "summary_zh", p["summary"][:500]))
+
+    if post_targets:
+        translated = ai_processor.translate_texts([t[2] for t in post_targets])
+        for (p, field, _orig), zh in zip(post_targets, translated):
+            if zh and zh != _orig:
+                p[field] = zh
+        # Persist per-post (one UPDATE each — small batches, fine)
+        seen = set()
+        for p, _field, _ in post_targets:
+            if p.get("id") and p["id"] not in seen and (p.get("title_zh") or p.get("summary_zh")):
+                seen.add(p["id"])
+                try:
+                    storage.update_post_translation(
+                        p["id"], p.get("title_zh", ""), p.get("summary_zh", "")
+                    )
+                except Exception as e:
+                    logger.warning("persist post translation failed: %s", e)
+
+    # Tweets
+    tweet_targets = [b["item"] for b in tweets if not b["item"].get("text_zh") and b["item"].get("text")]
+    if tweet_targets:
+        translated = ai_processor.translate_texts([t["text"] for t in tweet_targets])
+        for t, zh in zip(tweet_targets, translated):
+            if zh and zh != t["text"]:
+                t["text_zh"] = zh
+                try:
+                    storage.update_tweet_translation(t["id"], zh)
+                except Exception as e:
+                    logger.warning("persist tweet translation failed: %s", e)
 
 
 class EmailNotifier:
@@ -81,6 +130,9 @@ class EmailNotifier:
         tweets = [b for b in batch if b["type"] == "tweet"]
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+        # ── Ensure bilingual: fill any missing _zh translations on demand ──
+        _ensure_translations(posts, tweets)
+
         subject = f"🤖 AI News {label} — {len(batch)} item(s) · {now_str}"
 
         # ── AI digest summary ──────────────────────────────────────────────
@@ -138,11 +190,17 @@ class EmailNotifier:
             for b in tweets:
                 t = b["item"]
                 date = t.get("created_at", "")[:16].replace("T", " ")
+                text_zh = t.get("text_zh", "")
+                zh_block = (
+                    f"<p style='margin:6px 0 0;font-size:13px;color:#666;line-height:1.6;'>{text_zh}</p>"
+                    if text_zh else ""
+                )
                 html_parts.append(f"""
   <div style='margin-bottom:18px;padding:16px;border-left:4px solid #1d9bf0;
               background:#f0f8ff;border-radius:0 8px 8px 0;'>
     <div style='font-size:11px;color:#888;margin-bottom:6px;'>@{t['username']} · {date}</div>
     <p style='margin:0;font-size:14px;color:#222;line-height:1.6;'>{t['text']}</p>
+    {zh_block}
     <div style='margin-top:10px;font-size:12px;color:#888;'>
       ❤ {t.get('likes',0)} &nbsp;&nbsp; 🔁 {t.get('retweets',0)}
       &nbsp;&nbsp;
@@ -163,10 +221,18 @@ class EmailNotifier:
         for b in batch:
             if b["type"] == "post":
                 p = b["item"]
-                text_lines.append(f"[{p['source']}] {p['title']}\n{p['url']}\n")
+                line = f"[{p['source']}] {p['title']}"
+                if p.get("title_zh"):
+                    line += f"\n  {p['title_zh']}"
+                line += f"\n{p['url']}\n"
+                text_lines.append(line)
             else:
                 t = b["item"]
-                text_lines.append(f"@{t['username']}: {t['text'][:140]}\n{t.get('url','')}\n")
+                line = f"@{t['username']}: {t['text'][:140]}"
+                if t.get("text_zh"):
+                    line += f"\n  {t['text_zh'][:140]}"
+                line += f"\n{t.get('url','')}\n"
+                text_lines.append(line)
 
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject

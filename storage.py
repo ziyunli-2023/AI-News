@@ -20,11 +20,15 @@ def get_conn():
 
 def _migrate(conn):
     """Add columns introduced after initial schema."""
-    try:
-        conn.execute("ALTER TABLE blog_posts ADD COLUMN category TEXT")
-        conn.commit()
-    except Exception:
-        pass  # column already exists
+    for ddl in (
+        "ALTER TABLE blog_posts ADD COLUMN category TEXT",
+        "ALTER TABLE tweets ADD COLUMN text_zh TEXT",
+    ):
+        try:
+            conn.execute(ddl)
+            conn.commit()
+        except Exception:
+            pass  # column already exists
 
 
 def init_db():
@@ -186,6 +190,14 @@ def save_tweet(tweet: dict) -> bool:
 
 
 # ── Blog posts ─────────────────────────────────────────────────────────────
+
+def update_tweet_translation(tweet_id: str, text_zh: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE tweets SET text_zh=? WHERE id=?",
+            (text_zh, tweet_id),
+        )
+
 
 def update_post_translation(post_id: str, title_zh: str, summary_zh: str):
     with get_conn() as conn:

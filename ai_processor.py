@@ -65,6 +65,53 @@ def translate_batch(posts: list[dict]) -> list[dict]:
         return [{}] * len(posts)
 
 
+def translate_texts(texts: list[str]) -> list[str]:
+    """
+    On-demand translator for arbitrary English snippets → simplified Chinese.
+    Used for post titles/summaries and tweet text when the background worker
+    hasn't translated them yet. Returns a list of the same length; on failure
+    or empty input the original text is returned for that slot.
+    """
+    if not config.DEEPSEEK_API_KEY or not texts:
+        return list(texts)
+
+    # Build numbered list, skipping empties (preserve mapping back via index list)
+    indexed = [(i, t) for i, t in enumerate(texts) if t and t.strip()]
+    if not indexed:
+        return list(texts)
+
+    items_text = "\n".join(f"{n+1}. {t[:500]}" for n, (_, t) in enumerate(indexed))
+    prompt = f"""你是AI/科技领域专业翻译。将下面编号的英文内容逐条翻译成简体中文。
+技术术语规则：LLM、RLHF、fine-tuning、prompt、transformer、token、benchmark 等保留英文或使用业界通用译法。
+保持简洁、忠实原文，不要添加解释。
+
+{items_text}
+
+严格按以下 JSON 数组格式返回，按相同顺序，长度必须为 {len(indexed)}，不要添加任何其他内容：
+["译文1", "译文2", ...]"""
+
+    out = list(texts)
+    try:
+        resp = _get_client().chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.3,
+        )
+        raw = resp.choices[0].message.content.strip()
+        start = raw.find("[")
+        end = raw.rfind("]") + 1
+        if start == -1 or end == 0:
+            raise ValueError("No JSON array in response")
+        results = json.loads(raw[start:end])
+        for (orig_idx, _), translated in zip(indexed, results):
+            if isinstance(translated, str) and translated.strip():
+                out[orig_idx] = translated.strip()
+    except Exception as e:
+        logger.error("translate_texts failed: %s", e)
+    return out
+
+
 def generate_daily_briefing(posts_by_category: dict) -> dict:
     """
     Generate a structured daily briefing with bullet points per category.
@@ -147,7 +194,8 @@ def generate_digest_summary(items: list[dict]) -> str:
 
     lines = []
     for item in items[:30]:
-        d = item.get("data", item)
+        # Support both wrapper shapes: notifier uses "item", web_server uses "data"
+        d = item.get("item") or item.get("data") or item
         if item.get("type") == "tweet":
             lines.append(f"- [Tweet @{d.get('username','')}] {d.get('text','')[:100]}")
         else:

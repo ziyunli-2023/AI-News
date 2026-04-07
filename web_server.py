@@ -46,10 +46,59 @@ async def push_new_item(item: dict, item_type: str):
 
 # ── REST API ───────────────────────────────────────────────────────────────
 
+def _lazy_translate(posts: list[dict], tweets: list[dict]):
+    """Fill missing _zh fields via DeepSeek and persist back to SQLite."""
+    if not config.DEEPSEEK_API_KEY:
+        return
+    import ai_processor
+
+    targets = []  # (kind, obj, field, original_text)
+    for p in posts:
+        if not p.get("title_zh") and p.get("title"):
+            targets.append(("post", p, "title_zh", p["title"]))
+        if not p.get("summary_zh") and p.get("summary"):
+            targets.append(("post", p, "summary_zh", p["summary"][:500]))
+    for t in tweets:
+        if not t.get("text_zh") and t.get("text"):
+            targets.append(("tweet", t, "text_zh", t["text"]))
+
+    if not targets:
+        return
+
+    try:
+        translated = ai_processor.translate_texts([x[3] for x in targets])
+    except Exception as e:
+        logger.warning("lazy translate failed: %s", e)
+        return
+
+    for (kind, obj, field, orig), zh in zip(targets, translated):
+        if zh and zh != orig:
+            obj[field] = zh
+
+    # Persist (dedup by id to avoid duplicate UPDATEs when both fields filled)
+    seen_posts, seen_tweets = set(), set()
+    for kind, obj, _f, _o in targets:
+        oid = obj.get("id")
+        if not oid:
+            continue
+        try:
+            if kind == "post" and oid not in seen_posts:
+                seen_posts.add(oid)
+                storage.update_post_translation(
+                    oid, obj.get("title_zh", ""), obj.get("summary_zh", "")
+                )
+            elif kind == "tweet" and oid not in seen_tweets and obj.get("text_zh"):
+                seen_tweets.add(oid)
+                storage.update_tweet_translation(oid, obj["text_zh"])
+        except Exception as e:
+            logger.warning("persist translation failed: %s", e)
+
+
 @app.get("/api/news")
 def get_news(limit: int = 30, source: str = None):
     tweets = storage.get_latest_tweets(limit=limit)
     posts  = storage.get_latest_posts(limit=limit, source=source)
+    _lazy_translate(posts, tweets)
     items  = []
     for t in tweets:
         items.append({"type": "tweet", "date": t["created_at"], "data": t})
@@ -243,6 +292,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .card-eng { font-size: 12px; color: var(--muted); margin-left: auto; }
 
   .tweet-text { font-size: 14px; color: var(--text); line-height: 1.6; margin-bottom: 2px; }
+  .tweet-text-zh { font-size: 13px; color: var(--text2); line-height: 1.6; margin-top: 4px; margin-bottom: 4px; }
 
   .empty { text-align: center; padding: 50px 20px; color: var(--muted); }
   .empty-icon { font-size: 36px; margin-bottom: 10px; }
@@ -469,6 +519,11 @@ function makeCard(item, isNew) {
     const txt = document.createElement('div');
     txt.className = 'tweet-text'; txt.textContent = d.text;
     div.appendChild(txt);
+    if (d.text_zh) {
+      const tzh = document.createElement('div');
+      tzh.className = 'tweet-text-zh'; tzh.textContent = d.text_zh;
+      div.appendChild(tzh);
+    }
     const footer = document.createElement('div');
     footer.className = 'card-footer';
     const link = document.createElement('a');
