@@ -1,8 +1,8 @@
 # AI News Monitor
 
-> 自动追踪 AI 圈动态 | Auto-track AI industry news
+> Track AI news from X and RSS in one lightweight, self-hosted monitor.
 
-Monitor AI researchers on X (Twitter) + 22 RSS sources, store in SQLite, browse via a web dashboard, and expose data to Claude Code via MCP server.
+AI News Monitor collects updates from leading AI researchers, labs, founders, and technical blogs across X (Twitter) and RSS feeds, stores everything in SQLite, and serves the results through a local web dashboard. It can also send email digests, translate content into Chinese with DeepSeek, and expose the dataset through an MCP server for coding agents and local tooling.
 
 **Features:**
 - **X Monitor** — Track 8 key AI figures (Karpathy, Sam Altman, etc.) · Free tier
