@@ -37,7 +37,12 @@ def _ensure_translations(posts: list[dict], tweets: list[dict]):
             post_targets.append((p, "summary_zh", p["summary"][:500]))
 
     if post_targets:
-        translated = ai_processor.translate_texts([t[2] for t in post_targets])
+        # Chunk into batches of 10 to stay within max_tokens
+        CHUNK = 10
+        translated = []
+        texts = [t[2] for t in post_targets]
+        for i in range(0, len(texts), CHUNK):
+            translated.extend(ai_processor.translate_texts(texts[i:i + CHUNK]))
         for (p, field, _orig), zh in zip(post_targets, translated):
             if zh and zh != _orig:
                 p[field] = zh
@@ -56,7 +61,11 @@ def _ensure_translations(posts: list[dict], tweets: list[dict]):
     # Tweets
     tweet_targets = [b["item"] for b in tweets if not b["item"].get("text_zh") and b["item"].get("text")]
     if tweet_targets:
-        translated = ai_processor.translate_texts([t["text"] for t in tweet_targets])
+        CHUNK = 10
+        texts = [t["text"] for t in tweet_targets]
+        translated = []
+        for i in range(0, len(texts), CHUNK):
+            translated.extend(ai_processor.translate_texts(texts[i:i + CHUNK]))
         for t, zh in zip(tweet_targets, translated):
             if zh and zh != t["text"]:
                 t["text_zh"] = zh
@@ -105,9 +114,29 @@ class EmailNotifier:
 
             # Check if it's a send hour and we haven't sent yet this hour
             if hour in SEND_HOURS and hour not in self._sent_hours:
+                # Pull last 12 hours from DB — reliable across restarts
+                window_hours = 12
+                posts  = storage.get_latest_posts(limit=40)
+                tweets = storage.get_latest_tweets(limit=30)
+
+                from datetime import timezone, timedelta
+                cutoff = (datetime.utcnow() - timedelta(hours=window_hours)).isoformat()
+                posts  = [p for p in posts  if (p.get("published") or p.get("fetched_at", "")) >= cutoff]
+                tweets = [t for t in tweets if t.get("created_at", "") >= cutoff]
+
+                batch = (
+                    [{"item": p, "type": "post"}  for p in posts]
+                  + [{"item": t, "type": "tweet"} for t in tweets]
+                )
+
+                # Also drain any in-memory queue items not yet in DB
                 with self._lock:
-                    batch = list(self._queue)
+                    queued = list(self._queue)
                     self._queue.clear()
+                existing_ids = {b["item"].get("id") for b in batch}
+                for q in queued:
+                    if q["item"].get("id") not in existing_ids:
+                        batch.append(q)
 
                 if batch:
                     try:
@@ -115,11 +144,12 @@ class EmailNotifier:
                         self._sent_hours.add(hour)
                     except Exception as e:
                         logger.error("Failed to send email: %s", e)
-                        # Re-queue items so they're not lost
+                        # Re-queue in-memory items so they're not lost
                         with self._lock:
-                            self._queue = batch + self._queue
+                            self._queue = queued + self._queue
                 else:
-                    logger.info("Digest time (%02d:00) — no new items, skipping", hour)
+                    logger.info("Digest time (%02d:00) — no items in last %dh, skipping",
+                                hour, window_hours)
                     self._sent_hours.add(hour)
 
             # Sleep 60s between checks
