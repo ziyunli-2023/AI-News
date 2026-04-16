@@ -139,7 +139,9 @@ DB_PATH = "news.db"
 # ── Email notifications (Gmail SMTP) ───────────────────────────────────────
 EMAIL_SENDER       = os.getenv("EMAIL_SENDER", "")        # your Gmail address
 EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")  # Gmail App Password
-EMAIL_RECIPIENT    = os.getenv("EMAIL_RECIPIENT", "")     # where to receive
+# Comma-separated list of recipients, e.g. "a@x.com,b@x.com"
+EMAIL_RECIPIENTS: list[str] = [r.strip() for r in os.getenv("EMAIL_RECIPIENT", "").split(",") if r.strip()]
+EMAIL_RECIPIENT = EMAIL_RECIPIENTS[0] if EMAIL_RECIPIENTS else ""  # backwards compat
 
 # ── Web dashboard ──────────────────────────────────────────────────────────
 WEB_PORT = int(os.getenv("WEB_PORT", "8000"))

@@ -91,7 +91,7 @@ class EmailNotifier:
         self._thread.start()
         logger.info("Email notifier started — daily digest at %s → %s",
                     ", ".join(f"{h:02d}:00" for h in sorted(SEND_HOURS)),
-                    config.EMAIL_RECIPIENT)
+                    ", ".join(config.EMAIL_RECIPIENTS))
 
     def stop(self):
         self._stop.set()
@@ -268,15 +268,16 @@ class EmailNotifier:
                 line += f"\n{t.get('url','')}\n"
                 text_lines.append(line)
 
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = config.EMAIL_SENDER
-        msg["To"]      = config.EMAIL_RECIPIENT
-        msg.attach(MIMEText("\n".join(text_lines), "plain"))
-        msg.attach(MIMEText(html_body, "html"))
-
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(config.EMAIL_SENDER, config.EMAIL_APP_PASSWORD)
-            server.sendmail(config.EMAIL_SENDER, config.EMAIL_RECIPIENT, msg.as_string())
+            for recipient in config.EMAIL_RECIPIENTS:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"]    = config.EMAIL_SENDER
+                msg["To"]      = recipient
+                msg.attach(MIMEText("\n".join(text_lines), "plain"))
+                msg.attach(MIMEText(html_body, "html"))
+                server.sendmail(config.EMAIL_SENDER, recipient, msg.as_string())
 
-        logger.info("Digest sent (%s): %d items → %s", label, len(batch), config.EMAIL_RECIPIENT)
+        logger.info("Digest sent (%s): %d items → %s", label, len(batch),
+                    ", ".join(config.EMAIL_RECIPIENTS))
