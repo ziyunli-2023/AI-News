@@ -73,7 +73,7 @@ RSS_FEEDS = [
     {"name": "OpenAI",             "url": "https://openai.com/news/rss.xml",                                                                   "tier": 1, "category": "ai"},
     {"name": "Anthropic",          "url": "https://raw.githubusercontent.com/0xSMW/rss-feeds/main/feeds/feed_anthropic_news.xml",              "tier": 1, "category": "ai"},
     {"name": "Google DeepMind",    "url": "https://deepmind.google/blog/rss.xml",                                                              "tier": 1, "category": "ai"},
-    {"name": "Meta AI",            "url": "https://ai.meta.com/blog/rss/",                                                                     "tier": 1, "category": "ai"},
+    {"name": "Meta Engineering",    "url": "https://engineering.fb.com/feed/",                                                                   "tier": 1, "category": "ai"},
     {"name": "Hugging Face",       "url": "https://huggingface.co/blog/feed.xml",                                                              "tier": 1, "category": "ai"},
     {"name": "Import AI",          "url": "https://importai.substack.com/feed",                                                                "tier": 1, "category": "ai"},
     {"name": "Interconnects",      "url": "https://www.interconnects.ai/feed",                                                                 "tier": 1, "category": "ai"},
@@ -105,7 +105,7 @@ RSS_FEEDS = [
 
     # ── 创投圈 / Venture (poll every 60 min) ─────────────────────────────────
     {"name": "Y Combinator",       "url": "https://www.ycombinator.com/blog/rss.xml",                                                          "tier": 1, "category": "venture"},
-    {"name": "a16z",               "url": "https://a16z.com/feed/",                                                                            "tier": 1, "category": "venture"},
+    {"name": "a16z",               "url": "https://a16z.substack.com/feed",                                                                    "tier": 1, "category": "venture"},
     {"name": "TechCrunch",         "url": "https://techcrunch.com/feed/",                                                                      "tier": 2, "category": "venture"},
     {"name": "Crunchbase News",    "url": "https://news.crunchbase.com/feed/",                                                                 "tier": 2, "category": "venture"},
     {"name": "StrictlyVC",         "url": "https://strictlyvc.com/feed/",                                                                      "tier": 2, "category": "venture"},
@@ -113,11 +113,10 @@ RSS_FEEDS = [
     # ── 美股 / US Stocks (poll every 60 min) ────────────────────────────────
     {"name": "MarketWatch",        "url": "https://feeds.marketwatch.com/marketwatch/topstories/",                                             "tier": 2, "category": "us_stock"},
     {"name": "CNBC Markets",       "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html",                                              "tier": 2, "category": "us_stock"},
-    {"name": "Reuters Business",   "url": "https://feeds.reuters.com/reuters/businessNews",                                                    "tier": 2, "category": "us_stock"},
+    {"name": "Reuters Business",   "url": "https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com/business&hl=en-US&gl=US&ceid=US:en", "tier": 2, "category": "us_stock"},
 
     # ── Web3 圈官方博客 (poll every 60 min) ─────────────────────────────────
-    {"name": "a16z Crypto",        "url": "https://a16zcrypto.com/feed/",                                                                      "tier": 1, "category": "web3"},
-    {"name": "Paradigm",           "url": "https://www.paradigm.xyz/feed.xml",                                                                 "tier": 2, "category": "web3"},
+    {"name": "Paradigm",           "url": "https://paradigm.substack.com/feed",                                                                "tier": 2, "category": "web3"},
     {"name": "CoinCenter",         "url": "https://coincenter.org/feed",                                                                       "tier": 2, "category": "web3"},
 ]
 

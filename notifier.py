@@ -1,4 +1,4 @@
-"""Email notifier — sends digest at 09:00 and 20:00 daily."""
+"""Email notifier — sends digest at 07:00, 12:00 and 20:00 daily."""
 
 import logging
 import smtplib
@@ -14,8 +14,10 @@ import storage
 
 logger = logging.getLogger(__name__)
 
-# Send digest at these hours (local time)
-SEND_HOURS = {9, 20}
+# Send digest at these hours (local time) → window covers since previous send
+SEND_HOURS = {7, 12, 20}
+SEND_WINDOWS = {7: 11, 12: 5, 20: 8}   # hour → look-back hours
+SEND_LABELS  = {7: "Morning", 12: "Midday", 20: "Evening"}
 
 
 def _ensure_translations(posts: list[dict], tweets: list[dict]):
@@ -81,7 +83,6 @@ class EmailNotifier:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
-        self._sent_hours: set[int] = set()  # track which hours already sent today
 
     def start(self):
         if not config.EMAIL_SENDER or not config.EMAIL_APP_PASSWORD:
@@ -103,54 +104,96 @@ class EmailNotifier:
         with self._lock:
             self._queue.append({"item": item, "type": item_type})
 
+    def _build_batch(self, slot_time: datetime, window_hours: int) -> list[dict]:
+        """Fetch posts/tweets for the window ending at slot_time."""
+        from datetime import timedelta
+        cutoff = (slot_time - timedelta(hours=window_hours)).isoformat()
+        posts  = [p for p in storage.get_latest_posts(limit=40)
+                  if (p.get("published") or p.get("fetched_at", "")) >= cutoff]
+        tweets = [t for t in storage.get_latest_tweets(limit=30)
+                  if t.get("created_at", "") >= cutoff]
+        return [{"item": p, "type": "post"} for p in posts] + \
+               [{"item": t, "type": "tweet"} for t in tweets]
+
+    def _try_send_slot(self, date_str: str, slot_hour: int, slot_time: datetime, label: str):
+        """Build and send digest for one slot; returns True on success."""
+        batch = self._build_batch(slot_time, SEND_WINDOWS[slot_hour])
+
+        # Drain any in-memory queue items not yet in DB
+        with self._lock:
+            queued = list(self._queue)
+            self._queue.clear()
+        existing_ids = {b["item"].get("id") for b in batch}
+        for q in queued:
+            if q["item"].get("id") not in existing_ids:
+                batch.append(q)
+
+        if batch:
+            try:
+                self._send(batch, label=label)
+                storage.record_digest_sent(date_str, slot_hour)
+                return True
+            except Exception as e:
+                logger.error("Failed to send email: %s", e)
+                with self._lock:
+                    self._queue = queued + self._queue
+                return False
+        else:
+            logger.info("Digest %s %02d:00 — no items in window, skipping", date_str, slot_hour)
+            storage.record_digest_sent(date_str, slot_hour)
+            return True
+
     def _run(self):
+        from datetime import timedelta
+        # Grace period: catch up today's slot if woke up within 2 hours
+        CATCHUP_GRACE_HOURS = 2
+
         while not self._stop.is_set():
             now = datetime.now()
-            hour = now.hour
+            today = now.strftime("%Y-%m-%d")
 
-            # Reset sent tracker at midnight
-            if hour == 0:
-                self._sent_hours.clear()
+            # ── Today's scheduled and grace-period sends ───────────────────
+            for slot_hour in sorted(SEND_HOURS):
+                slot_time = now.replace(hour=slot_hour, minute=0, second=0, microsecond=0)
+                if slot_time > now:
+                    continue
+                if storage.was_digest_sent(today, slot_hour):
+                    continue
 
-            # Check if it's a send hour and we haven't sent yet this hour
-            if hour in SEND_HOURS and hour not in self._sent_hours:
-                # Pull last 12 hours from DB — reliable across restarts
-                window_hours = 12
-                posts  = storage.get_latest_posts(limit=40)
-                tweets = storage.get_latest_tweets(limit=30)
+                minutes_late = (now - slot_time).total_seconds() / 60
+                if minutes_late > CATCHUP_GRACE_HOURS * 60:
+                    storage.record_digest_sent(today, slot_hour)
+                    logger.info("Digest slot %02d:00 missed by %.0f min — skipping", slot_hour, minutes_late)
+                    continue
 
-                from datetime import timezone, timedelta
-                cutoff = (datetime.utcnow() - timedelta(hours=window_hours)).isoformat()
-                posts  = [p for p in posts  if (p.get("published") or p.get("fetched_at", "")) >= cutoff]
-                tweets = [t for t in tweets if t.get("created_at", "") >= cutoff]
+                label = SEND_LABELS[slot_hour]
+                if minutes_late > 5:
+                    label += " (catch-up)"
+                self._try_send_slot(today, slot_hour, slot_time, label)
 
-                batch = (
-                    [{"item": p, "type": "post"}  for p in posts]
-                  + [{"item": t, "type": "tweet"} for t in tweets]
-                )
+            # ── Cross-day catch-up: send the most recent missed past slot ──
+            # Collect all unsent slots from previous days (up to 7 days back),
+            # ordered most-recent-first. Send only the latest one; silently
+            # mark the rest as done to avoid a flood of old digests.
+            missed_past = []
+            for days_back in range(1, 8):
+                check_date = now - timedelta(days=days_back)
+                date_str = check_date.strftime("%Y-%m-%d")
+                for slot_hour in sorted(SEND_HOURS, reverse=True):
+                    slot_time = check_date.replace(hour=slot_hour, minute=0, second=0, microsecond=0)
+                    if not storage.was_digest_sent(date_str, slot_hour):
+                        missed_past.append((date_str, slot_hour, slot_time))
 
-                # Also drain any in-memory queue items not yet in DB
-                with self._lock:
-                    queued = list(self._queue)
-                    self._queue.clear()
-                existing_ids = {b["item"].get("id") for b in batch}
-                for q in queued:
-                    if q["item"].get("id") not in existing_ids:
-                        batch.append(q)
-
-                if batch:
-                    try:
-                        self._send(batch, label="Morning" if hour < 12 else "Evening")
-                        self._sent_hours.add(hour)
-                    except Exception as e:
-                        logger.error("Failed to send email: %s", e)
-                        # Re-queue in-memory items so they're not lost
-                        with self._lock:
-                            self._queue = queued + self._queue
-                else:
-                    logger.info("Digest time (%02d:00) — no items in last %dh, skipping",
-                                hour, window_hours)
-                    self._sent_hours.add(hour)
+            if missed_past:
+                # Send only the most recent missed slot
+                date_str, slot_hour, slot_time = missed_past[0]
+                label = f"{SEND_LABELS[slot_hour]} (catch-up from {date_str})"
+                self._try_send_slot(date_str, slot_hour, slot_time, label)
+                # Silently discard all older missed slots
+                for old_date, old_hour, _ in missed_past[1:]:
+                    storage.record_digest_sent(old_date, old_hour)
+                    logger.info("Cross-day slot %s %02d:00 — marked skipped (superseded by catch-up)",
+                                old_date, old_hour)
 
             # Sleep 60s between checks
             self._stop.wait(60)
