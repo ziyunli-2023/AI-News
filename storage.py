@@ -90,6 +90,14 @@ def init_db():
         """)
         _migrate(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_category ON blog_posts(category)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS digest_log (
+                date    TEXT NOT NULL,
+                hour    INTEGER NOT NULL,
+                sent_at TEXT NOT NULL,
+                PRIMARY KEY (date, hour)
+            )
+        """)
 
 
 def _content_hash(title: str) -> str:
@@ -330,6 +338,24 @@ def search_news(query: str, limit: int = 20, source_type: str = "all") -> list[d
             ).fetchall()
             results.extend([dict(r) for r in rows])
     return results[:limit]
+
+
+# ── Digest send log ────────────────────────────────────────────────────────
+
+def was_digest_sent(date_str: str, hour: int) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM digest_log WHERE date=? AND hour=?", (date_str, hour)
+        ).fetchone()
+        return row is not None
+
+
+def record_digest_sent(date_str: str, hour: int):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO digest_log (date, hour, sent_at) VALUES (?, ?, ?)",
+            (date_str, hour, datetime.utcnow().isoformat()),
+        )
 
 
 def get_recent_posts_by_category(hours: int = 24, limit_per_category: int = 10) -> dict[str, list[dict]]:
