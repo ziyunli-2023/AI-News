@@ -22,6 +22,15 @@ def _get_client() -> OpenAI:
     return _client
 
 
+def _extract_json_array(raw: str):
+    raw = (raw or "").strip()
+    start = raw.find("[")
+    end = raw.rfind("]")
+    if start == -1 or end == -1:
+        raise ValueError("No JSON array in response")
+    return json.loads(raw[start:end + 1])
+
+
 def translate_batch(posts: list[dict]) -> list[dict]:
     """
     Translate up to 5 posts per call.
@@ -29,7 +38,7 @@ def translate_batch(posts: list[dict]) -> list[dict]:
     Returns: list of dicts with 'title_zh' and 'summary_zh' keys.
     """
     if not config.DEEPSEEK_API_KEY or not posts:
-        return [{}] * len(posts)
+        return posts  # Return original posts so caller can use title/summary
 
     items_text = "\n".join(
         f"{i+1}. title: {p.get('title','')}\n   summary: {p.get('summary','')[:300]}"
@@ -52,30 +61,19 @@ def translate_batch(posts: list[dict]) -> list[dict]:
             temperature=0.3,
         )
         raw = resp.choices[0].message.content.strip()
-        start = raw.find("[")
-        end   = raw.rfind("]") + 1
-        if start == -1 or end == 0:
-            raise ValueError("No JSON array in response")
-        results = json.loads(raw[start:end])
+        results = _extract_json_array(raw)
         while len(results) < len(posts):
             results.append({})
         return results[:len(posts)]
     except Exception as e:
         logger.error("translate_batch failed: %s", e)
-        return [{}] * len(posts)
+        return posts  # Return original posts on failure for graceful fallback
 
 
-def translate_texts(texts: list[str]) -> list[str]:
+def _translate_texts_once(texts: list[str]) -> list[str]:
     """
-    On-demand translator for arbitrary English snippets → simplified Chinese.
-    Used for post titles/summaries and tweet text when the background worker
-    hasn't translated them yet. Returns a list of the same length; on failure
-    or empty input the original text is returned for that slot.
+    Single-pass batch translation. Returns originals for any slot that fails.
     """
-    if not config.DEEPSEEK_API_KEY or not texts:
-        return list(texts)
-
-    # Build numbered list, skipping empties (preserve mapping back via index list)
     indexed = [(i, t) for i, t in enumerate(texts) if t and t.strip()]
     if not indexed:
         return list(texts)
@@ -99,17 +97,36 @@ def translate_texts(texts: list[str]) -> list[str]:
             temperature=0.3,
         )
         raw = resp.choices[0].message.content.strip()
-        start = raw.find("[")
-        end = raw.rfind("]") + 1
-        if start == -1 or end == 0:
-            raise ValueError("No JSON array in response")
-        results = json.loads(raw[start:end])
+        results = _extract_json_array(raw)
         for (orig_idx, _), translated in zip(indexed, results):
             if isinstance(translated, str) and translated.strip():
                 out[orig_idx] = translated.strip()
     except Exception as e:
-        logger.error("translate_texts failed: %s", e)
+        raise ValueError(str(e)) from e
     return out
+
+
+def translate_texts(texts: list[str]) -> list[str]:
+    """
+    On-demand translator for arbitrary English snippets → simplified Chinese.
+    Used for post titles/summaries and tweet text when the background worker
+    hasn't translated them yet. Returns a list of the same length; on failure
+    or empty input the original text is returned for that slot.
+    """
+    if not config.DEEPSEEK_API_KEY or not texts:
+        return list(texts)
+
+    try:
+        return _translate_texts_once(texts)
+    except Exception as e:
+        logger.error("translate_texts failed for batch size %d: %s", len(texts), e)
+        if len(texts) <= 1:
+            return list(texts)
+
+        mid = len(texts) // 2
+        left = translate_texts(texts[:mid])
+        right = translate_texts(texts[mid:])
+        return left + right
 
 
 def generate_daily_briefing(posts_by_category: dict) -> dict:
@@ -170,8 +187,10 @@ def generate_daily_briefing(posts_by_category: dict) -> dict:
         )
         raw = resp.choices[0].message.content.strip()
         start = raw.find("{")
-        end = raw.rfind("}") + 1
-        data = json.loads(raw[start:end])
+        end = raw.rfind("}")
+        if start == -1 or end == -1:
+            raise ValueError("No JSON object in response")
+        data = json.loads(raw[start:end + 1])
         # Attach label/icon metadata
         for sec in data.get("sections", []):
             meta = CATEGORY_META.get(sec["category"], {})
@@ -222,10 +241,10 @@ def generate_digest_summary(items: list[dict]) -> list[str]:
         )
         raw = resp.choices[0].message.content.strip()
         start = raw.find("[")
-        end = raw.rfind("]") + 1
-        if start == -1 or end == 0:
+        end = raw.rfind("]")
+        if start == -1 or end == -1:
             raise ValueError("No JSON array in response")
-        bullets = json.loads(raw[start:end])
+        bullets = json.loads(raw[start:end + 1])
         return [str(b).strip() for b in bullets if str(b).strip()]
     except Exception as e:
         logger.error("generate_digest_summary failed: %s", e)
