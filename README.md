@@ -108,13 +108,41 @@ Add to your Claude Code MCP config (`~/.claude/settings.json` or `.mcp.json`):
 
 ---
 
+## Running the Service
+
+### Manual start
+
+```bash
+# Foreground (useful for debugging)
+python main.py
+
+# Background, logging to main.log
+python main.py >> logs/main.log 2>&1 &
+```
+
+### Check if the service is running
+
+```bash
+ps aux | grep main.py | grep -v grep
+```
+
+If the output is empty, the process is not running. Restart it manually or via launchd (see below).
+
+---
+
 ## Auto-start on macOS (launchd)
 
-To run the monitor automatically at login:
+The service is managed by macOS `launchd` and is configured to **start at login** and **restart automatically on crash**.
 
-### 1. Create the plist file
+### Plist location
 
-Create `~/Library/LaunchAgents/com.yourname.news-monitor.plist`:
+```
+~/Library/LaunchAgents/com.ziyun.news-monitor.plist
+```
+
+### Plist contents
+
+Adjust the Python path to match your environment (use `which python3` to find it). If using a Conda environment, point to the env's interpreter directly:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -122,50 +150,96 @@ Create `~/Library/LaunchAgents/com.yourname.news-monitor.plist`:
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key>
-  <string>com.yourname.news-monitor</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/python3</string>
-    <string>/path/to/AI-News/main.py</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/path/to/AI-News/logs/stdout.log</string>
-  <key>StandardErrorPath</key>
-  <string>/path/to/AI-News/logs/stderr.log</string>
+    <key>Label</key>
+    <string>com.ziyun.news-monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Use your Conda env's python, or /usr/bin/python3 -->
+        <string>/Users/ziyun/opt/anaconda3/envs/cli-env/bin/python3</string>
+        <string>/Users/ziyun/Documents/Code/News/main.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ziyun/Documents/Code/News</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/ziyun/opt/anaconda3/envs/cli-env/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!-- Start at login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart automatically if it crashes -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Log output (launchd-managed runs) -->
+    <key>StandardOutPath</key>
+    <string>/Users/ziyun/Documents/Code/News/logs/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ziyun/Documents/Code/News/logs/stderr.log</string>
 </dict>
 </plist>
 ```
 
-### 2. Install & manage the service
+> **Note:** `WorkingDirectory` must be set correctly — the service reads `.env` and `news.db` relative to this path.
+
+### Managing the service
 
 ```bash
-# Load (install / reload after editing plist)
-launchctl load ~/Library/LaunchAgents/com.yourname.news-monitor.plist
+# Install / reload after editing the plist
+launchctl load ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
 
-# Check status (first col = PID, "-" means not running; second col = exit code)
+# Check status
+# Output format: <PID>  <exit-code>  <label>
+# "-" in PID column = not running; exit code -9 = killed by OS
 launchctl list | grep news-monitor
 
-# Stop
-launchctl unload ~/Library/LaunchAgents/com.yourname.news-monitor.plist
+# Stop the service
+launchctl unload ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
 
-# Start
-launchctl load ~/Library/LaunchAgents/com.yourname.news-monitor.plist
-
-# View logs
-tail -f /path/to/AI-News/logs/stdout.log
-tail -f /path/to/AI-News/logs/stderr.log
+# Restart
+launchctl unload ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
+launchctl load ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
 ```
 
-### 3. Uninstall
+### Viewing logs
+
+| Log file | Written by |
+|---|---|
+| `logs/main.log` | Manual runs (`python main.py >> logs/main.log 2>&1 &`) |
+| `logs/stdout.log` | launchd-managed runs (stdout) |
+| `logs/stderr.log` | launchd-managed runs (stderr) |
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.yourname.news-monitor.plist
-rm ~/Library/LaunchAgents/com.yourname.news-monitor.plist
+# Follow logs in real time
+tail -f logs/main.log
+tail -f logs/stderr.log
+```
+
+### Troubleshooting: service exits silently after launchd start
+
+If `launchctl list | grep news-monitor` shows `- 0` (PID is `-`, exit code is `0`) right after loading, the process started and exited cleanly with no error. Common causes:
+
+- **Wrong Python path** — verify with `/path/to/python3 --version`
+- **Missing `.env`** — the service reads credentials from `.env` in the working directory; make sure it exists
+- **WorkingDirectory not set** — without it, relative paths like `news.db` and `.env` won't resolve
+
+As a fallback, start the service manually:
+
+```bash
+python main.py >> logs/main.log 2>&1 &
+```
+
+### Uninstall
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
+rm ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
 ```
 
 ---
