@@ -64,6 +64,7 @@ def _fetch_feed(feed_cfg: dict) -> list[dict]:
     is_arxiv = feed_cfg.get("is_arxiv", False)
     tier = feed_cfg.get("tier", 2)
     category = feed_cfg.get("category", "ai")
+    alert = feed_cfg.get("alert", False)
 
     try:
         resp = httpx.get(
@@ -102,6 +103,7 @@ def _fetch_feed(feed_cfg: dict) -> list[dict]:
                 "published": _parse_date(entry),
                 "feed_priority": tier,
                 "category": category,
+                "alert": alert,
             }
         )
     return posts

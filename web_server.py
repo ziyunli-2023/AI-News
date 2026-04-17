@@ -123,6 +123,22 @@ def health():
     return {"status": "ok", "feeds": len(config.RSS_FEEDS)}
 
 
+@app.get("/api/podcasts")
+def get_podcasts():
+    podcasts = [f for f in config.RSS_FEEDS if f.get("podcast")]
+    result = []
+    for p in podcasts:
+        recent = storage.get_latest_posts(limit=5, source=p["name"])
+        result.append({
+            "name": p["name"],
+            "site": p.get("site", ""),
+            "feed": p["url"],
+            "alert": p.get("alert", False),
+            "recent": recent,
+        })
+    return result
+
+
 @app.get("/api/digest-summary")
 def digest_summary():
     """Generate an on-demand AI digest summary of the latest news."""
@@ -297,6 +313,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .empty { text-align: center; padding: 50px 20px; color: var(--muted); }
   .empty-icon { font-size: 36px; margin-bottom: 10px; }
   .loading-text { text-align: center; padding: 20px; color: var(--muted); font-size: 13px; }
+
+  /* ── Podcast panel ── */
+  .podcast-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-bottom: 14px; box-shadow: var(--shadow); }
+  .podcast-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+  .podcast-icon { font-size: 36px; flex-shrink: 0; }
+  .podcast-info { flex: 1; min-width: 0; }
+  .podcast-name { font-size: 17px; font-weight: 700; color: var(--text); margin-bottom: 5px; }
+  .podcast-links { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pod-link { font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 5px; text-decoration: none; border: 1px solid var(--border); color: var(--text2); transition: border-color .12s, color .12s, background .12s; display: inline-flex; align-items: center; gap: 4px; }
+  .pod-link:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+  .pod-link.alert-badge { border-color: #7c3aed44; color: #7c3aed; background: #f5f3ff; }
+  [data-theme="dark"] .pod-link.alert-badge { color: #a78bfa; background: #2d1b69; border-color: #7c3aed66; }
+  .podcast-episodes { border-top: 1px solid var(--border); padding-top: 12px; }
+  .ep-label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
+  .ep-item { padding: 8px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: baseline; }
+  .ep-item:last-child { border-bottom: none; padding-bottom: 0; }
+  .ep-date { font-size: 11px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+  .ep-title { font-size: 13px; color: var(--text); line-height: 1.4; }
+  .ep-title a { color: inherit; text-decoration: none; }
+  .ep-title a:hover { color: var(--accent); text-decoration: underline; }
+  .ep-empty { font-size: 12px; color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
@@ -313,6 +350,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <button class="nav-btn active" onclick="setFilter('all',this)">🌐 全部 <span class="cnt" id="cnt-all">0</span></button>
     <button class="nav-btn" onclick="setFilter('posts',this)">📰 博客文章 <span class="cnt" id="cnt-posts">0</span></button>
     <button class="nav-btn" onclick="setFilter('tweets',this)">𝕏 推文 <span class="cnt" id="cnt-tweets">0</span></button>
+    <button class="nav-btn" id="navPodcast" onclick="showPodcasts(this)">🎙 播客</button>
 
     <div class="nav-section" style="margin-top:6px;">来源</div>
     <div id="sourceList"></div>
@@ -650,6 +688,92 @@ async function onSearch(q) {
       feed.appendChild(makeCard({ type: isPost?'post':'tweet', date: r.created_at||r.published||'', data: r }, false));
     });
   }, 300);
+}
+
+// ── Podcasts ──────────────────────────────────────────────────────────────
+function makeEmptyEl(icon, msg) {
+  const el = document.createElement('div'); el.className = 'empty';
+  const ic = document.createElement('div'); ic.className = 'empty-icon'; ic.textContent = icon;
+  const tx = document.createElement('div'); tx.textContent = msg;
+  el.appendChild(ic); el.appendChild(tx);
+  return el;
+}
+
+async function showPodcasts(btn) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  currentFilter = 'podcasts';
+
+  const feed = document.getElementById('cardFeed');
+  feed.textContent = '';
+  const loading = document.createElement('div');
+  loading.className = 'loading-text'; loading.textContent = '加载中…';
+  feed.appendChild(loading);
+
+  try {
+    const podcasts = await fetch('/api/podcasts').then(r => r.json());
+    feed.textContent = '';
+    if (!podcasts.length) { feed.appendChild(makeEmptyEl('🎙', '暂无跟踪的播客')); return; }
+
+    podcasts.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'podcast-card';
+
+      const header = document.createElement('div'); header.className = 'podcast-header';
+      const icon = document.createElement('div'); icon.className = 'podcast-icon'; icon.textContent = '🎙';
+      header.appendChild(icon);
+
+      const info = document.createElement('div'); info.className = 'podcast-info';
+      const name = document.createElement('div'); name.className = 'podcast-name'; name.textContent = p.name;
+      info.appendChild(name);
+
+      const links = document.createElement('div'); links.className = 'podcast-links';
+
+      if (p.site) {
+        const a = document.createElement('a');
+        a.className = 'pod-link'; a.href = p.site; a.target = '_blank'; a.textContent = '🌐 官网';
+        links.appendChild(a);
+      }
+      const rss = document.createElement('a');
+      rss.className = 'pod-link'; rss.href = p.feed; rss.target = '_blank'; rss.textContent = '📡 RSS';
+      links.appendChild(rss);
+
+      if (p.alert) {
+        const badge = document.createElement('span');
+        badge.className = 'pod-link alert-badge'; badge.textContent = '🔔 即时通知';
+        links.appendChild(badge);
+      }
+      info.appendChild(links);
+      header.appendChild(info);
+      card.appendChild(header);
+
+      const eps = document.createElement('div'); eps.className = 'podcast-episodes';
+      const label = document.createElement('div'); label.className = 'ep-label'; label.textContent = '最近更新';
+      eps.appendChild(label);
+
+      if (!p.recent || !p.recent.length) {
+        const empty = document.createElement('div');
+        empty.className = 'ep-empty'; empty.textContent = '暂无记录，等待下次抓取…';
+        eps.appendChild(empty);
+      } else {
+        p.recent.forEach(ep => {
+          const row = document.createElement('div'); row.className = 'ep-item';
+          const date = document.createElement('div'); date.className = 'ep-date';
+          date.textContent = (ep.published || '').slice(0, 10);
+          row.appendChild(date);
+          const title = document.createElement('div'); title.className = 'ep-title';
+          const a = document.createElement('a'); a.href = ep.url; a.target = '_blank'; a.textContent = ep.title;
+          title.appendChild(a); row.appendChild(title);
+          eps.appendChild(row);
+        });
+      }
+      card.appendChild(eps);
+      feed.appendChild(card);
+    });
+  } catch(e) {
+    feed.textContent = '';
+    feed.appendChild(makeEmptyEl('⚠️', '加载失败'));
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

@@ -198,13 +198,65 @@ class EmailNotifier:
             # Sleep 60s between checks
             self._stop.wait(60)
 
-    def _send(self, batch: list[dict], label: str = "Digest"):
-        posts  = [b for b in batch if b["type"] == "post"]
-        tweets = [b for b in batch if b["type"] == "tweet"]
+    def send_alert(self, post: dict):
+        """Send an immediate single-post alert email (bypasses digest queue)."""
+        if not config.EMAIL_SENDER or not config.EMAIL_APP_PASSWORD:
+            return
+        try:
+            self._send_alert_email(post)
+        except Exception as e:
+            logger.error("Failed to send alert email: %s", e)
+
+    def _send_alert_email(self, post: dict):
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        subject = f"🔔 {post['source']}: {post['title']}"
+        date = post.get("published", "")[:16].replace("T", " ")
+        summary_html = (
+            f"<p style='margin:8px 0 0;font-size:13px;color:#555;line-height:1.5;'>{post['summary'][:300]}…</p>"
+            if post.get("summary") else ""
+        )
+        html_body = f"""
+<html><body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+  max-width:680px;margin:auto;padding:24px;background:#fff;color:#222;'>
+  <div style='background:#7c3aed;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0;'>
+    <h1 style='margin:0;font-size:18px;'>🔔 新文章通知</h1>
+    <p style='margin:4px 0 0;font-size:12px;opacity:.8;'>{now_str}</p>
+  </div>
+  <div style='padding:20px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px;margin-bottom:24px;'>
+    <div style='font-size:11px;color:#888;margin-bottom:8px;'>{post['source']} · {date}</div>
+    <a href='{post['url']}' style='font-size:17px;font-weight:700;color:#7c3aed;text-decoration:none;
+       line-height:1.4;display:block;'>{post['title']}</a>
+    {summary_html}
+    <a href='{post['url']}' style='display:inline-block;margin-top:14px;font-size:13px;
+       color:#fff;background:#7c3aed;padding:8px 16px;border-radius:6px;text-decoration:none;'>
+      阅读全文 →</a>
+  </div>
+</body></html>"""
+        text_body = f"{post['source']} — {post['title']}\n{post['url']}\n"
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(config.EMAIL_SENDER, config.EMAIL_APP_PASSWORD)
+            for recipient in config.EMAIL_RECIPIENTS:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = subject
+                msg["From"]    = config.EMAIL_SENDER
+                msg["To"]      = recipient
+                msg.attach(MIMEText(text_body, "plain"))
+                msg.attach(MIMEText(html_body, "html"))
+                server.sendmail(config.EMAIL_SENDER, recipient, msg.as_string())
+        logger.info("Alert sent: [%s] %s", post["source"], post["title"][:80])
+
+    def _send(self, batch: list[dict], label: str = "Digest"):
+        _podcast_sources = {f["name"] for f in config.RSS_FEEDS if f.get("podcast")}
+
+        all_posts = [b for b in batch if b["type"] == "post"]
+        tweets    = [b for b in batch if b["type"] == "tweet"]
+        podcasts  = [b for b in all_posts if b["item"]["source"] in _podcast_sources]
+        posts     = [b for b in all_posts if b["item"]["source"] not in _podcast_sources]
+        now_str   = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         # ── Ensure bilingual: fill any missing _zh translations on demand ──
-        _ensure_translations(posts, tweets)
+        _ensure_translations(all_posts, tweets)
 
         subject = f"🤖 AI News {label} — {len(batch)} item(s) · {now_str}"
 
@@ -222,7 +274,7 @@ class EmailNotifier:
     <p style='margin:4px 0 0;font-size:13px;opacity:.8;'>{now_str} &nbsp;·&nbsp; {len(batch)} new item(s)</p>
   </div>
   <div style='background:#f4f6fb;padding:16px 24px;border-radius:0 0 10px 10px;margin-bottom:24px;'>
-    <span style='font-size:13px;color:#555;'>📰 {len(posts)} blog posts &nbsp;&nbsp; 🐦 {len(tweets)} tweets</span>
+    <span style='font-size:13px;color:#555;'>🎙 {len(podcasts)} 播客 &nbsp;&nbsp; 📰 {len(posts)} blog posts &nbsp;&nbsp; 🐦 {len(tweets)} tweets</span>
   </div>
 """)
         # Digest summary block — bullet points, one per line
@@ -238,6 +290,26 @@ class EmailNotifier:
     <ul style='margin:0;padding-left:20px;'>{bullets_html}</ul>
   </div>
 """)
+
+        # ── Podcast section ────────────────────────────────────────────────
+        if podcasts:
+            html_parts.append(f"<h2 style='font-size:16px;color:#7c3aed;border-bottom:2px solid #7c3aed;padding-bottom:8px;margin-bottom:14px;'>🎙 新播客 ({len(podcasts)})</h2>")
+            for b in podcasts:
+                p = b["item"]
+                date = p.get("published", "")[:10]
+                summary = p.get("summary_zh") or p.get("summary", "")
+                summary_snippet = summary[:250] + "…" if len(summary) > 250 else summary
+                html_parts.append(f"""
+  <div style='margin-bottom:16px;padding:16px;border-left:4px solid #7c3aed;
+              background:#f5f3ff;border-radius:0 8px 8px 0;'>
+    <div style='font-size:11px;color:#888;margin-bottom:6px;'>{p['source']} · {date}</div>
+    <a href='{p['url']}' style='font-size:15px;font-weight:700;color:#7c3aed;text-decoration:none;
+       line-height:1.4;display:block;margin-bottom:8px;'>{p['title']}</a>
+    <p style='margin:0;font-size:13px;color:#555;line-height:1.6;'>{summary_snippet}</p>
+    <a href='{p['url']}' style='display:inline-block;margin-top:10px;font-size:12px;
+       color:#fff;background:#7c3aed;padding:5px 12px;border-radius:4px;text-decoration:none;'>
+      收听 →</a>
+  </div>""")
 
         if posts:
             html_parts.append(f"<h2 style='font-size:16px;color:#0f3460;border-bottom:2px solid #0f3460;padding-bottom:8px;'>📰 Blog Posts ({len(posts)})</h2>")
