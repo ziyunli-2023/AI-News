@@ -92,6 +92,10 @@ RSS_FEEDS = [
     {"name": "Marcus on AI",       "url": "https://garymarcus.substack.com/feed",                                                              "tier": 2, "category": "ai"},
     {"name": "Chollet Substack",   "url": "https://fchollet.substack.com/feed",                                                                "tier": 2, "category": "ai"},
     {"name": "The Decoder",        "url": "https://the-decoder.com/feed/",                                                                     "tier": 2, "category": "ai"},
+    {"name": "Microsoft AI Blog",  "url": "https://blogs.microsoft.com/ai/feed/",                                                              "tier": 2, "category": "ai"},
+    {"name": "NVIDIA Blog",        "url": "https://developer.nvidia.com/blog/feed/",                                                           "tier": 2, "category": "ai"},
+    {"name": "Stanford HAI",       "url": "https://hai.stanford.edu/news/rss.xml",                                                             "tier": 2, "category": "ai"},
+    {"name": "MIT Tech Review AI", "url": "https://www.technologyreview.com/feed/",                                                            "tier": 2, "category": "ai"},
     # ── AI — High-volume news sites (Tier 3, poll every 2 hr) ───────────────
     {"name": "VentureBeat AI",     "url": "https://venturebeat.com/category/ai/feed/",                                                         "tier": 3, "category": "ai"},
     {"name": "The Verge AI",       "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",                                 "tier": 3, "category": "ai"},
@@ -110,6 +114,8 @@ RSS_FEEDS = [
     # ── 创投圈 / Venture (poll every 60 min) ─────────────────────────────────
     {"name": "Y Combinator",       "url": "https://www.ycombinator.com/blog/rss.xml",                                                          "tier": 1, "category": "venture"},
     {"name": "a16z",               "url": "https://a16z.substack.com/feed",                                                                    "tier": 1, "category": "venture"},
+    {"name": "Sequoia Capital",    "url": "https://www.sequoiacap.com/feed/",                                                                  "tier": 1, "category": "venture"},
+    {"name": "Lightspeed",         "url": "https://lsvp.com/feed/",                                                                           "tier": 2, "category": "venture"},
     {"name": "TechCrunch",         "url": "https://techcrunch.com/feed/",                                                                      "tier": 2, "category": "venture"},
     {"name": "Crunchbase News",    "url": "https://news.crunchbase.com/feed/",                                                                 "tier": 2, "category": "venture"},
     {"name": "StrictlyVC",         "url": "https://strictlyvc.com/feed/",                                                                      "tier": 2, "category": "venture"},
