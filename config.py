@@ -70,6 +70,9 @@ RSS_FEEDS = [
     {"name": "Sam Altman",         "url": "https://blog.samaltman.com/posts.atom",                                                             "tier": 1, "category": "ai"},
     {"name": "Paul Graham",        "url": "https://paulgraham.com/rss.html",                                                                   "tier": 1, "category": "ai"},
     {"name": "Dwarkesh Podcast",   "url": "https://www.dwarkesh.com/feed",                                                                   "tier": 1, "category": "ai", "podcast": True, "site": "https://www.dwarkesh.com"},
+    {"name": "Lex Fridman Podcast","url": "https://lexfridman.com/feed/podcast/",                                                               "tier": 1, "category": "ai", "podcast": True, "site": "https://lexfridman.com"},
+    {"name": "No Priors",          "url": "https://nopriors.com/feed",                                                                          "tier": 1, "category": "ai", "podcast": True, "site": "https://nopriors.com"},
+    {"name": "Latent Space",       "url": "https://www.latent.space/feed",                                                                      "tier": 1, "category": "ai", "podcast": True, "site": "https://www.latent.space"},
     # ── AI — Lab blogs + deep newsletters (Tier 1, poll every 30 min) ──────
     {"name": "OpenAI",             "url": "https://openai.com/news/rss.xml",                                                                   "tier": 1, "category": "ai"},
     {"name": "Anthropic",          "url": "https://raw.githubusercontent.com/0xSMW/rss-feeds/main/feeds/feed_anthropic_news.xml",              "tier": 1, "category": "ai"},
