@@ -352,6 +352,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <button class="nav-btn" onclick="setFilter('tweets',this)">𝕏 推文 <span class="cnt" id="cnt-tweets">0</span></button>
     <button class="nav-btn" id="navPodcast" onclick="showPodcasts(this)">🎙 播客</button>
 
+    <div class="nav-section" style="margin-top:6px;">分类</div>
+    <button class="nav-btn" onclick="setCategory('ai',this)">🤖 AI <span class="cnt" id="cnt-ai">0</span></button>
+    <button class="nav-btn" onclick="setCategory('web3',this)">🔗 Web3 <span class="cnt" id="cnt-web3">0</span></button>
+    <button class="nav-btn" onclick="setCategory('venture',this)">💼 创投 <span class="cnt" id="cnt-venture">0</span></button>
+    <button class="nav-btn" onclick="setCategory('us_stock',this)">📈 美股 <span class="cnt" id="cnt-us_stock">0</span></button>
+
     <div class="nav-section" style="margin-top:6px;">来源</div>
     <div id="sourceList"></div>
 
@@ -592,6 +598,24 @@ function updateCounts() {
   document.getElementById('cnt-all').textContent    = allItems.length;
   document.getElementById('cnt-posts').textContent  = allItems.filter(i=>i.type==='post').length;
   document.getElementById('cnt-tweets').textContent = allItems.filter(i=>i.type==='tweet').length;
+  ['ai','web3','venture','us_stock'].forEach(cat => {
+    const el = document.getElementById('cnt-' + cat);
+    if (el) el.textContent = allItems.filter(i=>i.data.category===cat).length;
+  });
+}
+
+function setCategory(cat, btn) {
+  currentFilter = 'category:' + cat;
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  const feed = document.getElementById('cardFeed');
+  feed.textContent = '';
+  const filtered = allItems.filter(i => i.data.category === cat);
+  if (!filtered.length) {
+    feed.appendChild(makeEmptyEl('📭', '该分类暂无内容'));
+    return;
+  }
+  filtered.forEach(item => feed.appendChild(makeCard(item, false)));
 }
 function buildSourceList() {
   const counts = {};
