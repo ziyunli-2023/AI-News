@@ -11,6 +11,7 @@ import storage
 import ai_processor
 from rss_monitor import RSSMonitor
 from nitter_monitor import NitterMonitor
+from papers_monitor import PapersMonitor
 from notifier import EmailNotifier
 from web_server import app, push_new_item
 
@@ -87,6 +88,9 @@ async def main():
     nitter_mon = NitterMonitor(on_new_tweet=on_new_tweet)
     nitter_mon.start()
 
+    papers_mon = PapersMonitor(on_new_post=on_new_post)
+    papers_mon.start()
+
     stop_event = threading.Event()
     start_translation_worker(stop_event)
 
@@ -105,6 +109,7 @@ async def main():
     finally:
         rss_mon.stop()
         nitter_mon.stop()
+        papers_mon.stop()
         notifier.stop()
         stop_event.set()
 

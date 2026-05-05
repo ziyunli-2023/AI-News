@@ -101,9 +101,9 @@ RSS_FEEDS = [
     {"name": "The Verge AI",       "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",                                 "tier": 3, "category": "ai"},
     {"name": "Wired AI",           "url": "https://www.wired.com/feed/tag/ai/latest/rss",                                                      "tier": 3, "category": "ai"},
     {"name": "Towards Data Science","url": "https://towardsdatascience.com/feed/",                                                             "tier": 3, "category": "ai"},
-    # ── AI — ArXiv (keyword-filtered) ───────────────────────────────────────
-    {"name": "arXiv cs.AI",        "url": "http://arxiv.org/rss/cs.AI",  "tier": 2, "category": "ai", "is_arxiv": True},
-    {"name": "arXiv cs.LG",        "url": "http://arxiv.org/rss/cs.LG",  "tier": 2, "category": "ai", "is_arxiv": True},
+    # ── AI — ArXiv (keyword + author/org whitelist filtered, see ARXIV_AUTHOR_WHITELIST) ─
+    {"name": "arXiv cs.AI",        "url": "http://arxiv.org/rss/cs.AI",  "tier": 2, "category": "papers", "is_arxiv": True},
+    {"name": "arXiv cs.LG",        "url": "http://arxiv.org/rss/cs.LG",  "tier": 2, "category": "papers", "is_arxiv": True},
 
     # ── Web3 / Crypto (poll every 60 min) ───────────────────────────────────
     {"name": "CoinDesk",           "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",                                                   "tier": 2, "category": "web3"},
@@ -128,6 +128,26 @@ RSS_FEEDS = [
     # ── Web3 圈官方博客 (poll every 60 min) ─────────────────────────────────
     {"name": "Paradigm",           "url": "https://paradigm.substack.com/feed",                                                                "tier": 2, "category": "web3"},
     {"name": "CoinCenter",         "url": "https://coincenter.org/feed",                                                                       "tier": 2, "category": "web3"},
+
+    # ── 论文 / 技术报告 — 实验室博客 RSS (Tier 2, poll every 60 min) ────────
+    # 这些是国内外 AI 实验室的官方博客/新闻 RSS,用作"技术报告"信号。
+    # category="papers" 让 UI 把它们归入 📄 论文 类目;papers_monitor 会再标 is_paper=1。
+    {"name": "Apple ML Research",   "url": "https://machinelearning.apple.com/rss.xml",                                                        "tier": 2, "category": "papers"},
+    {"name": "Allen AI (AI2)",      "url": "https://allenai.org/blog.atom",                                                                    "tier": 2, "category": "papers"},
+    {"name": "Cohere",              "url": "https://cohere.com/blog/rss.xml",                                                                  "tier": 2, "category": "papers"},
+    {"name": "Microsoft Research",  "url": "https://www.microsoft.com/en-us/research/feed/",                                                   "tier": 2, "category": "papers"},
+    {"name": "DeepSeek 技术报告",   "url": "https://api-docs.deepseek.com/news/feed.xml",                                                      "tier": 2, "category": "papers"},
+    {"name": "Qwen 技术报告",       "url": "https://qwenlm.github.io/blog/index.xml",                                                          "tier": 2, "category": "papers"},
+    {"name": "Moonshot Kimi",       "url": "https://github.com/MoonshotAI/Kimi-K2/releases.atom",                                              "tier": 2, "category": "papers"},
+    {"name": "01.AI Yi",            "url": "https://github.com/01-ai/Yi/releases.atom",                                                        "tier": 2, "category": "papers"},
+    {"name": "ByteDance Seed",      "url": "https://github.com/bytedance/Seed-OSS/releases.atom",                                              "tier": 2, "category": "papers"},
+    {"name": "智谱 GLM",            "url": "https://github.com/THUDM/GLM-4.5/releases.atom",                                                   "tier": 2, "category": "papers"},
+
+    # ── 论文 — 扩展 arXiv 分类 (Tier 2, 关键词 + 白名单双重过滤) ──────────────
+    {"name": "arXiv cs.CL",        "url": "http://arxiv.org/rss/cs.CL",  "tier": 2, "category": "papers", "is_arxiv": True},
+    {"name": "arXiv cs.CV",        "url": "http://arxiv.org/rss/cs.CV",  "tier": 2, "category": "papers", "is_arxiv": True},
+    {"name": "arXiv stat.ML",      "url": "http://arxiv.org/rss/stat.ML", "tier": 2, "category": "papers", "is_arxiv": True},
+    {"name": "arXiv cs.MA",        "url": "http://arxiv.org/rss/cs.MA",  "tier": 2, "category": "papers", "is_arxiv": True},
 ]
 
 # Keywords for ArXiv filtering (only store papers matching at least one)
@@ -138,6 +158,56 @@ ARXIV_KEYWORDS = {
     "vision-language", "text-to-image", "diffusion model", "transformer",
     "retrieval-augmented", "hallucination", "jailbreak", "safety",
 }
+
+# Second arXiv filter layer: papers must mention a top-tier institution
+# or a known frontier lab in title/summary/authors. Cuts ~80% of arXiv noise.
+ARXIV_AUTHOR_WHITELIST = {
+    # Industrial labs
+    "openai", "anthropic", "deepmind", "google research", "google brain",
+    "meta ai", "fair ", "facebook ai", "microsoft research", "msr ",
+    "nvidia", "apple ", "allen institute", "ai2 ", "mistral",
+    "cohere", "stability ai", "runway", "xai", "x.ai",
+    # Chinese labs
+    "deepseek", "alibaba", "qwen", "bytedance", "doubao", "seed-",
+    "tencent", "baidu", "moonshot", "kimi", "zhipu", "thudm",
+    "01.ai", "01-ai", "yi-", "baichuan", "01-ai",
+    # Top universities
+    "mit ", "stanford", "berkeley", "cmu", "carnegie mellon",
+    "princeton", "harvard", "oxford", "cambridge", "eth zurich",
+    "tsinghua", "peking university", "sjtu", "fudan",
+}
+
+# HuggingFace org IDs of frontier AI labs.
+# Used by papers_monitor.py to fetch each lab's papers via /api/papers?author={org_id}.
+# Map: HF org id → human-readable Chinese label used as `source`.
+PAPER_LAB_ORG_IDS = {
+    # 国外
+    "deepmind":          "DeepMind 技术报告",
+    "openai":            "OpenAI 技术报告",
+    "Anthropic":         "Anthropic 技术报告",
+    "facebook":          "Meta FAIR 技术报告",
+    "microsoft":         "MSR 技术报告",
+    "apple":             "Apple ML 技术报告",
+    "allenai":           "AI2 技术报告",
+    "mistralai":         "Mistral 技术报告",
+    "CohereForAI":       "Cohere 技术报告",
+    "stabilityai":       "Stability AI 技术报告",
+    # 中国
+    "deepseek-ai":       "DeepSeek 技术报告",
+    "Qwen":              "Qwen 技术报告",
+    "bytedance-research":"字节跳动 Seed 技术报告",
+    "ByteDance-Seed":    "字节跳动 Seed 技术报告",
+    "THUDM":             "智谱/THUDM 技术报告",
+    "moonshotai":        "Moonshot Kimi 技术报告",
+    "01-ai":             "01.AI Yi 技术报告",
+    "baichuan-inc":      "百川 技术报告",
+}
+
+# Paper monitor polling intervals (seconds)
+PAPERS_DAILY_INTERVAL    = 1800   # 30 min — refetch HF Daily Papers list
+PAPERS_LAB_INTERVAL      = 3600   # 60 min — refetch each lab's HF org papers
+PAPERS_REFRESH_INTERVAL  = 21600  # 6 hr  — refresh upvotes/scores for hot papers
+PAPERS_HN_INTERVAL       = 3600   # 60 min — Algolia HN scan
 
 # ── DeepSeek API ──────────────────────────────────────────────────────────
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")

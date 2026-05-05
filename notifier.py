@@ -105,26 +105,31 @@ class EmailNotifier:
             self._queue.append({"item": item, "type": item_type})
 
     def _build_batch(self, slot_time: datetime, window_hours: int) -> list[dict]:
-        """Fetch posts/tweets for the window ending at slot_time."""
+        """Fetch posts for the window ending at slot_time. Tweets are no
+        longer included in digests."""
         from datetime import timedelta
         cutoff = (slot_time - timedelta(hours=window_hours)).isoformat()
         posts  = [p for p in storage.get_latest_posts(limit=40)
                   if (p.get("published") or p.get("fetched_at", "")) >= cutoff]
-        tweets = [t for t in storage.get_latest_tweets(limit=30)
-                  if t.get("created_at", "") >= cutoff]
-        return [{"item": p, "type": "post"} for p in posts] + \
-               [{"item": t, "type": "tweet"} for t in tweets]
+        return [{"item": p, "type": "post"} for p in posts]
 
     def _try_send_slot(self, date_str: str, slot_hour: int, slot_time: datetime, label: str):
         """Build and send digest for one slot; returns True on success."""
         batch = self._build_batch(slot_time, SEND_WINDOWS[slot_hour])
 
-        # Drain any in-memory queue items not yet in DB
+        # Drain any in-memory queue items not yet in DB. Tweets are dropped
+        # since digests no longer include a Twitter section.
         with self._lock:
             queued = list(self._queue)
             self._queue.clear()
+        dropped_tweets = sum(1 for q in queued if q.get("type") == "tweet")
+        if dropped_tweets:
+            logger.info("dropped %d queued tweet(s) — digests no longer include Twitter",
+                        dropped_tweets)
         existing_ids = {b["item"].get("id") for b in batch}
         for q in queued:
+            if q.get("type") == "tweet":
+                continue
             if q["item"].get("id") not in existing_ids:
                 batch.append(q)
 
@@ -250,13 +255,33 @@ class EmailNotifier:
         _podcast_sources = {f["name"] for f in config.RSS_FEEDS if f.get("podcast")}
 
         all_posts = [b for b in batch if b["type"] == "post"]
-        tweets    = [b for b in batch if b["type"] == "tweet"]
-        podcasts  = [b for b in all_posts if b["item"]["source"] in _podcast_sources]
-        posts     = [b for b in all_posts if b["item"]["source"] not in _podcast_sources]
+        # Papers are a bonus section sourced separately (top-N by score, not
+        # constrained by the digest window). Hide them from the regular Posts
+        # section so they aren't shown twice.
+        non_paper = [b for b in all_posts if not b["item"].get("is_paper")]
+        podcasts  = [b for b in non_paper if b["item"]["source"] in _podcast_sources]
+        posts     = [b for b in non_paper if b["item"]["source"] not in _podcast_sources]
+
+        # Top trending papers in last 24h, regardless of digest window.
+        trending_paper_rows = storage.get_trending_papers(hours=24, limit=5, min_score=10.0)
+        trending_papers = [{"item": p, "type": "post"} for p in trending_paper_rows]
+
+        # Category briefing — like the website's /api/briefing. Wider window
+        # (24h) than the digest itself so the overview stays meaningful even
+        # for the 5-hour midday slot.
+        briefing = {"sections": []}
+        try:
+            posts_by_cat = storage.get_recent_posts_by_category(
+                hours=24, limit_per_category=10,
+            )
+            briefing = ai_processor.generate_daily_briefing(posts_by_cat)
+        except Exception as e:
+            logger.warning("briefing generation failed (skipping section): %s", e)
+
         now_str   = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         # ── Ensure bilingual: fill any missing _zh translations on demand ──
-        _ensure_translations(all_posts, tweets)
+        _ensure_translations(all_posts + trending_papers, [])
 
         subject = f"🤖 AI News {label} — {len(batch)} item(s) · {now_str}"
 
@@ -274,7 +299,7 @@ class EmailNotifier:
     <p style='margin:4px 0 0;font-size:13px;opacity:.8;'>{now_str} &nbsp;·&nbsp; {len(batch)} new item(s)</p>
   </div>
   <div style='background:#f4f6fb;padding:16px 24px;border-radius:0 0 10px 10px;margin-bottom:24px;'>
-    <span style='font-size:13px;color:#555;'>🎙 {len(podcasts)} 播客 &nbsp;&nbsp; 📰 {len(posts)} blog posts &nbsp;&nbsp; 🐦 {len(tweets)} tweets</span>
+    <span style='font-size:13px;color:#555;'>🎙 {len(podcasts)} 播客 &nbsp;&nbsp; 📰 {len(posts)} blog posts &nbsp;&nbsp; 📄 {len(trending_papers)} 热门论文</span>
   </div>
 """)
         # Digest summary block — bullet points, one per line
@@ -286,10 +311,128 @@ class EmailNotifier:
             html_parts.append(f"""
   <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;
               padding:16px 20px;margin-bottom:24px;'>
-    <div style='font-size:12px;font-weight:600;color:#92400e;margin-bottom:10px;'>📋 今日 AI 资讯摘要</div>
+    <div style='font-size:12px;font-weight:600;color:#92400e;margin-bottom:10px;'>📋 今日资讯摘要</div>
     <ul style='margin:0;padding-left:20px;'>{bullets_html}</ul>
   </div>
 """)
+
+        # ── ⚡ Category Briefing (analogous to website /api/briefing) ──────
+        sections = (briefing or {}).get("sections") or []
+        if sections:
+            html_parts.append("""
+  <div style='background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;
+              padding:16px 20px;margin-bottom:24px;'>
+    <div style='font-size:13px;font-weight:700;color:#1e40af;margin-bottom:12px;'>⚡ 每日要闻速报</div>
+""")
+            for sec in sections:
+                points = sec.get("points") or []
+                if not points:
+                    continue
+                icon  = sec.get("icon")  or "📌"
+                title = sec.get("label") or sec.get("category") or ""
+                points_html = "".join(
+                    f"<li style='margin:4px 0;font-size:13px;color:#1f2937;line-height:1.55;'>{p}</li>"
+                    for p in points
+                )
+                html_parts.append(f"""
+    <div style='margin-bottom:14px;'>
+      <div style='font-size:13px;font-weight:600;color:#1e3a8a;margin-bottom:4px;'>{icon} {title}</div>
+      <ul style='margin:0;padding-left:22px;'>{points_html}</ul>
+    </div>""")
+            html_parts.append("  </div>\n")
+
+        # ── 🔥 Trending Papers section ─────────────────────────────────────
+        if trending_papers:
+            html_parts.append(
+                f"<h2 style='font-size:16px;color:#be185d;border-bottom:2px solid #be185d;"
+                f"padding-bottom:8px;margin-top:8px;'>🔥 今日热门论文 ({len(trending_papers)})</h2>"
+            )
+            for b in trending_papers:
+                p = b["item"]
+                title_zh   = p.get("title_zh") or ""
+                summary_zh = p.get("summary_zh") or ""
+                upvotes    = int(p.get("hf_upvotes") or 0)
+                arxiv_id   = p.get("arxiv_id") or ""
+                pdf_url    = p.get("pdf_url") or ""
+                authors_str = ""
+                try:
+                    import json as _json
+                    arr = _json.loads(p.get("authors") or "[]")
+                    if isinstance(arr, list) and arr:
+                        head = ", ".join(arr[:3])
+                        authors_str = f"👥 {head}" + (f" +{len(arr) - 3}" if len(arr) > 3 else "")
+                except Exception:
+                    pass
+
+                # Detect 大模型公司 label from source/title/authors
+                haystack = " ".join((p.get("source") or "", p.get("title") or "",
+                                     p.get("authors") or "")).lower()
+                company_label = ""
+                for kw, label_zh in (
+                    ("deepseek", "DeepSeek"), ("qwen", "Qwen"), ("alibaba", "Alibaba"),
+                    ("bytedance", "字节跳动"), ("doubao", "字节豆包"),
+                    ("moonshot", "Moonshot"), ("kimi", "Kimi"),
+                    ("zhipu", "智谱"), ("thudm", "智谱"), ("glm", "智谱 GLM"),
+                    ("01-ai", "01.AI"), ("01.ai", "01.AI"), ("baichuan", "百川"),
+                    ("openai", "OpenAI"), ("anthropic", "Anthropic"),
+                    ("deepmind", "DeepMind"), ("meta ai", "Meta AI"),
+                    ("fair", "Meta FAIR"), ("mistral", "Mistral"), ("xai", "xAI"),
+                ):
+                    if kw in haystack:
+                        company_label = label_zh
+                        break
+
+                badges = []
+                if company_label:
+                    badges.append(
+                        f"<span style='background:#fce7f3;color:#be185d;font-size:11px;"
+                        f"font-weight:600;padding:2px 8px;border-radius:4px;'>🏢 {company_label}</span>"
+                    )
+                if upvotes > 0:
+                    badges.append(
+                        f"<span style='background:#fef3c7;color:#b45309;font-size:11px;"
+                        f"font-weight:600;padding:2px 8px;border-radius:4px;'>👍 {upvotes}</span>"
+                    )
+                if arxiv_id:
+                    badges.append(
+                        f"<span style='background:#ede9fe;color:#6d28d9;font-size:11px;"
+                        f"font-weight:600;padding:2px 8px;border-radius:4px;font-family:monospace;'>"
+                        f"arXiv:{arxiv_id}</span>"
+                    )
+                badges_html = " ".join(badges)
+
+                title_zh_html  = f"<div style='font-size:13px;color:#666;margin-top:4px;'>{title_zh}</div>" if title_zh else ""
+                summary_html   = (
+                    f"<p style='margin:8px 0 0;font-size:12px;color:#aaa;line-height:1.5;'>{summary_zh[:220]}…</p>"
+                    if summary_zh else (
+                        f"<p style='margin:8px 0 0;font-size:12px;color:#888;line-height:1.5;'>{(p.get('summary') or '')[:220]}…</p>"
+                        if p.get("summary") else ""
+                    )
+                )
+                authors_html = (
+                    f"<div style='font-size:11px;color:#888;margin-top:8px;'>{authors_str}</div>"
+                    if authors_str else ""
+                )
+                pdf_link_html = (
+                    f"&nbsp;&nbsp;<a href='{pdf_url}' style='color:#be185d;text-decoration:none;font-size:12px;'>PDF ↓</a>"
+                    if pdf_url else ""
+                )
+
+                html_parts.append(f"""
+  <div style='margin-bottom:16px;padding:14px 16px;border-left:4px solid #be185d;
+              background:#fdf2f8;border-radius:0 8px 8px 0;'>
+    <div style='display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;'>{badges_html}</div>
+    <a href='{p.get('url') or ''}' style='font-size:14px;font-weight:700;color:#be185d;
+       text-decoration:none;line-height:1.4;display:block;'>{p.get('title') or ''}</a>
+    {title_zh_html}
+    {summary_html}
+    {authors_html}
+    <div style='margin-top:10px;'>
+      <a href='{p.get('url') or ''}' style='display:inline-block;font-size:12px;color:#fff;
+         background:#be185d;padding:5px 12px;border-radius:4px;text-decoration:none;'>查看论文 →</a>
+      {pdf_link_html}
+    </div>
+  </div>""")
 
         # ── Podcast section ────────────────────────────────────────────────
         if podcasts:
@@ -334,29 +477,6 @@ class EmailNotifier:
       Read →</a>
   </div>""")
 
-        if tweets:
-            html_parts.append(f"<h2 style='font-size:16px;color:#1d9bf0;border-bottom:2px solid #1d9bf0;padding-bottom:8px;margin-top:28px;'>🐦 Tweets ({len(tweets)})</h2>")
-            for b in tweets:
-                t = b["item"]
-                date = t.get("created_at", "")[:16].replace("T", " ")
-                text_zh = t.get("text_zh", "")
-                zh_block = (
-                    f"<p style='margin:6px 0 0;font-size:13px;color:#666;line-height:1.6;'>{text_zh}</p>"
-                    if text_zh else ""
-                )
-                html_parts.append(f"""
-  <div style='margin-bottom:18px;padding:16px;border-left:4px solid #1d9bf0;
-              background:#f0f8ff;border-radius:0 8px 8px 0;'>
-    <div style='font-size:11px;color:#888;margin-bottom:6px;'>@{t['username']} · {date}</div>
-    <p style='margin:0;font-size:14px;color:#222;line-height:1.6;'>{t['text']}</p>
-    {zh_block}
-    <div style='margin-top:10px;font-size:12px;color:#888;'>
-      ❤ {t.get('likes',0)} &nbsp;&nbsp; 🔁 {t.get('retweets',0)}
-      &nbsp;&nbsp;
-      <a href='{t.get("url","")}' style='color:#1d9bf0;text-decoration:none;'>View tweet →</a>
-    </div>
-  </div>""")
-
         html_parts.append("""
   <div style='margin-top:32px;padding-top:16px;border-top:1px solid #eee;
               font-size:11px;color:#aaa;text-align:center;'>
@@ -368,20 +488,14 @@ class EmailNotifier:
         # ── Plain text fallback ────────────────────────────────────────────
         text_lines = [f"AI News {label} — {now_str}\n{len(batch)} new item(s)\n"]
         for b in batch:
-            if b["type"] == "post":
-                p = b["item"]
-                line = f"[{p['source']}] {p['title']}"
-                if p.get("title_zh"):
-                    line += f"\n  {p['title_zh']}"
-                line += f"\n{p['url']}\n"
-                text_lines.append(line)
-            else:
-                t = b["item"]
-                line = f"@{t['username']}: {t['text'][:140]}"
-                if t.get("text_zh"):
-                    line += f"\n  {t['text_zh'][:140]}"
-                line += f"\n{t.get('url','')}\n"
-                text_lines.append(line)
+            if b["type"] != "post":
+                continue
+            p = b["item"]
+            line = f"[{p['source']}] {p['title']}"
+            if p.get("title_zh"):
+                line += f"\n  {p['title_zh']}"
+            line += f"\n{p['url']}\n"
+            text_lines.append(line)
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(config.EMAIL_SENDER, config.EMAIL_APP_PASSWORD)

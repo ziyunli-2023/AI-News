@@ -140,10 +140,10 @@ def generate_daily_briefing(posts_by_category: dict) -> dict:
 
     CATEGORY_META = {
         "ai":       {"label": "AI 前沿",  "icon": "🤖"},
+        "papers":   {"label": "AI 论文",  "icon": "📄"},
         "web3":     {"label": "Web3",     "icon": "⛓️"},
         "venture":  {"label": "创投圈",   "icon": "💰"},
         "us_stock": {"label": "美股",     "icon": "🇺🇸"},
-        "hk_stock": {"label": "港股",     "icon": "🇭🇰"},
     }
 
     # Build news text per category
@@ -172,10 +172,10 @@ def generate_daily_briefing(posts_by_category: dict) -> dict:
 
 {{"sections": [
   {{"category": "ai",       "points": ["...", "...", "..."]}},
+  {{"category": "papers",   "points": ["...", "...", "..."]}},
   {{"category": "web3",     "points": ["...", "...", "..."]}},
   {{"category": "venture",  "points": ["...", "...", "..."]}},
-  {{"category": "us_stock", "points": ["...", "...", "..."]}},
-  {{"category": "hk_stock", "points": ["...", "...", "..."]}}
+  {{"category": "us_stock", "points": ["...", "...", "..."]}}
 ]}}"""
 
     try:

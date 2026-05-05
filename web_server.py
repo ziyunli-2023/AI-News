@@ -95,7 +95,13 @@ def _lazy_translate(posts: list[dict], tweets: list[dict]):
 
 
 @app.get("/api/news")
-def get_news(limit: int = 30, source: str = None):
+def get_news(limit: int = 30, source: str = None, category: str = None):
+    # Papers mode: skip tweets, return is_paper rows sorted by paper_score (not by date).
+    if category == "papers":
+        posts = storage.get_trending_papers(hours=24 * 30, limit=limit)
+        _lazy_translate(posts, [])
+        return [{"type": "post", "date": p.get("published", ""), "data": p} for p in posts]
+
     tweets = storage.get_latest_tweets(limit=limit)
     posts  = storage.get_latest_posts(limit=limit, source=source)
     _lazy_translate(posts, tweets)
@@ -153,7 +159,7 @@ def digest_summary():
 
 @app.get("/api/briefing")
 def daily_briefing():
-    """Generate structured daily briefing with sections: AI, Web3, 创投, 美股, 港股."""
+    """Generate structured daily briefing with sections: AI, 论文, Web3, 创投, 美股."""
     import ai_processor
     posts_by_cat = storage.get_recent_posts_by_category(hours=24, limit_per_category=10)
     return ai_processor.generate_daily_briefing(posts_by_cat)
@@ -292,6 +298,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .tag-tweet { background: var(--tweet-bg); color: var(--tweet); }
   .tag-t1    { background: var(--green-bg); color: var(--green); }
   .tag-cat   { background: var(--surface2); color: var(--muted); }
+  .tag-paper-uv    { background: #fef3c7; color: #b45309; }
+  .tag-paper-arxiv { background: #ede9fe; color: #6d28d9; font-family: ui-monospace, monospace; }
+  .tag-paper-co    { background: #fce7f3; color: #be185d; }
+  [data-theme="dark"] .tag-paper-uv    { background: #3a2e0a; color: #fbbf24; }
+  [data-theme="dark"] .tag-paper-arxiv { background: #2a1f4a; color: #c4b5fd; }
+  [data-theme="dark"] .tag-paper-co    { background: #3a1228; color: #f9a8d4; }
+  .card-paper-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .card-paper-footer .authors { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-paper-footer .pdf-link { color: var(--accent); text-decoration: none; font-weight: 500; }
+  .card-paper-footer .pdf-link:hover { text-decoration: underline; }
   .card-date { font-size: 11px; color: var(--muted); margin-left: auto; }
 
   .card-title { font-size: 15px; font-weight: 600; line-height: 1.4; color: var(--text); margin-bottom: 4px; }
@@ -354,6 +370,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <div class="nav-section" style="margin-top:6px;">分类</div>
     <button class="nav-btn" onclick="setCategory('ai',this)">🤖 AI <span class="cnt" id="cnt-ai">0</span></button>
+    <button class="nav-btn" onclick="setCategory('papers',this)">📄 论文 <span class="cnt" id="cnt-papers">0</span></button>
     <button class="nav-btn" onclick="setCategory('web3',this)">🔗 Web3 <span class="cnt" id="cnt-web3">0</span></button>
     <button class="nav-btn" onclick="setCategory('venture',this)">💼 创投 <span class="cnt" id="cnt-venture">0</span></button>
     <button class="nav-btn" onclick="setCategory('us_stock',this)">📈 美股 <span class="cnt" id="cnt-us_stock">0</span></button>
@@ -395,7 +412,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <!-- AI 摘要 -->
       <div class="digest-panel">
         <div class="panel-header">
-          <div class="panel-title">📋 AI 资讯摘要</div>
+          <div class="panel-title">📋 资讯摘要</div>
           <div class="panel-actions">
             <button class="refresh-btn" onclick="loadDigest()">↻ 刷新</button>
           </div>
@@ -524,6 +541,40 @@ function makeCard(item, isNew) {
     cat.className = 'tag tag-cat'; cat.textContent = d.category;
     meta.appendChild(cat);
   }
+  // Paper-specific badges
+  if (isPost && d.is_paper) {
+    if (d.hf_upvotes && d.hf_upvotes > 0) {
+      const uv = document.createElement('span');
+      uv.className = 'tag tag-paper-uv';
+      uv.textContent = '👍 ' + d.hf_upvotes;
+      meta.appendChild(uv);
+    }
+    if (d.arxiv_id) {
+      const ax = document.createElement('span');
+      ax.className = 'tag tag-paper-arxiv';
+      ax.textContent = 'arXiv:' + d.arxiv_id;
+      meta.appendChild(ax);
+    }
+    // 大模型公司标签 — 检查 source/title/authors 拼接
+    const haystack = ((d.source||'') + ' ' + (d.title||'') + ' ' + (d.authors||'')).toLowerCase();
+    const COMPANY_LABELS = [
+      ['deepseek','DeepSeek'], ['qwen','Qwen'], ['alibaba','Alibaba'],
+      ['bytedance','字节跳动'], ['doubao','字节豆包'], ['moonshot','Moonshot'],
+      ['kimi','Kimi'], ['zhipu','智谱'], ['thudm','智谱'], ['glm','智谱 GLM'],
+      ['01-ai','01.AI'], ['01.ai','01.AI'], ['baichuan','百川'],
+      ['openai','OpenAI'], ['anthropic','Anthropic'], ['deepmind','DeepMind'],
+      ['meta ai','Meta AI'], ['fair','Meta FAIR'], ['mistral','Mistral'], ['xai','xAI'],
+    ];
+    for (const [kw, label] of COMPANY_LABELS) {
+      if (haystack.includes(kw)) {
+        const co = document.createElement('span');
+        co.className = 'tag tag-paper-co';
+        co.textContent = '🏢 ' + label;
+        meta.appendChild(co);
+        break;
+      }
+    }
+  }
 
   const dateEl = document.createElement('span');
   dateEl.className = 'card-date'; dateEl.textContent = date;
@@ -559,6 +610,31 @@ function makeCard(item, isNew) {
     link.className = 'card-link'; link.href = d.url; link.target = '_blank'; link.textContent = '阅读原文 →';
     footer.appendChild(link);
     div.appendChild(footer);
+
+    // Paper-only footer with authors + PDF link
+    if (d.is_paper && (d.authors || d.pdf_url)) {
+      const pf = document.createElement('div');
+      pf.className = 'card-paper-footer';
+      if (d.authors) {
+        try {
+          const arr = JSON.parse(d.authors);
+          if (Array.isArray(arr) && arr.length) {
+            const span = document.createElement('span');
+            span.className = 'authors';
+            const head = arr.slice(0, 3).join(', ');
+            span.textContent = '👥 ' + head + (arr.length > 3 ? ` +${arr.length - 3}` : '');
+            pf.appendChild(span);
+          }
+        } catch (e) { /* malformed authors json — skip */ }
+      }
+      if (d.pdf_url) {
+        const a = document.createElement('a');
+        a.className = 'pdf-link'; a.href = d.pdf_url; a.target = '_blank';
+        a.textContent = 'PDF ↓';
+        pf.appendChild(a);
+      }
+      div.appendChild(pf);
+    }
   } else {
     const txt = document.createElement('div');
     txt.className = 'tweet-text'; txt.textContent = d.text;
@@ -598,18 +674,35 @@ function updateCounts() {
   document.getElementById('cnt-all').textContent    = allItems.length;
   document.getElementById('cnt-posts').textContent  = allItems.filter(i=>i.type==='post').length;
   document.getElementById('cnt-tweets').textContent = allItems.filter(i=>i.type==='tweet').length;
-  ['ai','web3','venture','us_stock'].forEach(cat => {
+  ['ai','papers','web3','venture','us_stock'].forEach(cat => {
     const el = document.getElementById('cnt-' + cat);
     if (el) el.textContent = allItems.filter(i=>i.data.category===cat).length;
   });
 }
 
-function setCategory(cat, btn) {
+async function setCategory(cat, btn) {
   currentFilter = 'category:' + cat;
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   const feed = document.getElementById('cardFeed');
   feed.textContent = '';
+
+  // Papers mode: fetch sorted-by-score from server (not by date).
+  if (cat === 'papers') {
+    feed.appendChild(makeEmptyEl('⏳', '正在加载论文…'));
+    try {
+      const res = await fetch('/api/news?category=papers&limit=50');
+      const items = await res.json();
+      feed.textContent = '';
+      if (!items.length) { feed.appendChild(makeEmptyEl('📭', '该分类暂无内容')); return; }
+      items.forEach(item => feed.appendChild(makeCard(item, false)));
+    } catch (e) {
+      feed.textContent = '';
+      feed.appendChild(makeEmptyEl('⚠', '加载失败'));
+    }
+    return;
+  }
+
   const filtered = allItems.filter(i => i.data.category === cat);
   if (!filtered.length) {
     feed.appendChild(makeEmptyEl('📭', '该分类暂无内容'));

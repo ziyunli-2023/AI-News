@@ -23,6 +23,15 @@ def _migrate(conn):
     for ddl in (
         "ALTER TABLE blog_posts ADD COLUMN category TEXT",
         "ALTER TABLE tweets ADD COLUMN text_zh TEXT",
+        # Paper-tracking fields (Phase 1: technical reports + trending papers)
+        "ALTER TABLE blog_posts ADD COLUMN is_paper INTEGER DEFAULT 0",
+        "ALTER TABLE blog_posts ADD COLUMN arxiv_id TEXT",
+        "ALTER TABLE blog_posts ADD COLUMN hf_paper_id TEXT",
+        "ALTER TABLE blog_posts ADD COLUMN hf_upvotes INTEGER DEFAULT 0",
+        "ALTER TABLE blog_posts ADD COLUMN hn_score INTEGER DEFAULT 0",
+        "ALTER TABLE blog_posts ADD COLUMN authors TEXT",
+        "ALTER TABLE blog_posts ADD COLUMN pdf_url TEXT",
+        "ALTER TABLE blog_posts ADD COLUMN paper_score REAL DEFAULT 0",
     ):
         try:
             conn.execute(ddl)
@@ -90,6 +99,9 @@ def init_db():
         """)
         _migrate(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_category ON blog_posts(category)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_paper    ON blog_posts(is_paper, paper_score DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_arxiv    ON blog_posts(arxiv_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_hf_paper ON blog_posts(hf_paper_id)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS digest_log (
                 date    TEXT NOT NULL,
@@ -225,20 +237,27 @@ def get_untranslated_posts(limit: int = 10) -> list[dict]:
 
 
 def save_post(post: dict) -> bool:
-    """Insert new post. Returns True if new (not a duplicate by id or content_hash)."""
+    """Insert new post. Returns True if new (not a duplicate by id or content_hash).
+
+    For papers, if a duplicate exists by content_hash (e.g. same paper picked up
+    by both arXiv RSS and HF Daily Papers), enrich the existing row with the
+    paper-specific fields rather than dropping the data.
+    """
     ch = _content_hash(post["title"])
     with get_conn() as conn:
-        # Cross-source dedup: skip if same normalized title already stored
         dup = conn.execute(
             "SELECT id FROM blog_posts WHERE content_hash=?", (ch,)
         ).fetchone()
         if dup:
+            if post.get("is_paper"):
+                _enrich_paper_fields(conn, dup["id"], post)
             return False
         try:
             conn.execute(
                 """INSERT INTO blog_posts
-                   (id, source, title, url, summary, published, feed_priority, content_hash, category, fetched_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, source, title, url, summary, published, feed_priority, content_hash, category, fetched_at,
+                    is_paper, arxiv_id, hf_paper_id, hf_upvotes, hn_score, authors, pdf_url, paper_score)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     post["id"],
                     post["source"],
@@ -250,11 +269,117 @@ def save_post(post: dict) -> bool:
                     ch,
                     post.get("category", "ai"),
                     datetime.utcnow().isoformat(),
+                    1 if post.get("is_paper") else 0,
+                    post.get("arxiv_id"),
+                    post.get("hf_paper_id"),
+                    int(post.get("hf_upvotes") or 0),
+                    int(post.get("hn_score") or 0),
+                    post.get("authors"),
+                    post.get("pdf_url"),
+                    float(post.get("paper_score") or 0.0),
                 ),
             )
             return True
         except sqlite3.IntegrityError:
             return False
+
+
+def _enrich_paper_fields(conn, row_id: str, post: dict) -> None:
+    """Backfill paper-specific fields on an existing row when a duplicate paper
+    arrives from a different source (e.g. arXiv RSS landed first, then HF Daily)."""
+    conn.execute(
+        """UPDATE blog_posts SET
+               is_paper    = COALESCE(NULLIF(is_paper,0), 1),
+               arxiv_id    = COALESCE(arxiv_id, ?),
+               hf_paper_id = COALESCE(hf_paper_id, ?),
+               hf_upvotes  = MAX(COALESCE(hf_upvotes,0), ?),
+               authors     = COALESCE(authors, ?),
+               pdf_url     = COALESCE(pdf_url, ?),
+               paper_score = MAX(COALESCE(paper_score,0), ?)
+           WHERE id = ?""",
+        (
+            post.get("arxiv_id"),
+            post.get("hf_paper_id"),
+            int(post.get("hf_upvotes") or 0),
+            post.get("authors"),
+            post.get("pdf_url"),
+            float(post.get("paper_score") or 0.0),
+            row_id,
+        ),
+    )
+
+
+def update_paper_metrics(post_id: str, hf_upvotes: int = None,
+                         hn_score: int = None, paper_score: float = None) -> None:
+    """Refresh trending signals on an existing paper row."""
+    sets, vals = [], []
+    if hf_upvotes is not None:
+        sets.append("hf_upvotes=?"); vals.append(int(hf_upvotes))
+    if hn_score is not None:
+        sets.append("hn_score=?"); vals.append(int(hn_score))
+    if paper_score is not None:
+        sets.append("paper_score=?"); vals.append(float(paper_score))
+    if not sets:
+        return
+    vals.append(post_id)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE blog_posts SET {', '.join(sets)} WHERE id=?", vals)
+
+
+def get_papers_for_refresh(hours: int = 72) -> list[dict]:
+    """Return recently-fetched papers whose upvotes should be re-polled.
+
+    Includes title/summary/authors so the score recompute can re-evaluate
+    tier (大模型公司 vs 实验室) bonuses.
+    """
+    cutoff = datetime.utcfromtimestamp(datetime.utcnow().timestamp() - hours * 3600).isoformat()
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT id, hf_paper_id, arxiv_id, hf_upvotes, hn_score,
+                      published, fetched_at, source, title, summary, authors
+               FROM blog_posts
+               WHERE is_paper=1 AND fetched_at >= ?""",
+            (cutoff,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_trending_papers(hours: int = 72, limit: int = 10, min_score: float = 0.0) -> list[dict]:
+    """Top papers by paper_score within recent window."""
+    cutoff = datetime.utcfromtimestamp(datetime.utcnow().timestamp() - hours * 3600).isoformat()
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM blog_posts
+               WHERE is_paper=1
+                 AND (published >= ? OR fetched_at >= ?)
+                 AND paper_score >= ?
+               ORDER BY paper_score DESC, hf_upvotes DESC
+               LIMIT ?""",
+            (cutoff, cutoff, min_score, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_papers_by_lab(lab_label: str, limit: int = 20) -> list[dict]:
+    """Papers whose source matches a lab label (e.g. 'DeepSeek 技术报告')."""
+    like = f"%{lab_label}%"
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM blog_posts
+               WHERE is_paper=1 AND source LIKE ?
+               ORDER BY published DESC
+               LIMIT ?""",
+            (like, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_paper_by_arxiv_id(arxiv_id: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM blog_posts WHERE arxiv_id=? LIMIT 1", (arxiv_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
 
 # ── Queries ────────────────────────────────────────────────────────────────
@@ -361,7 +486,7 @@ def record_digest_sent(date_str: str, hour: int):
 def get_recent_posts_by_category(hours: int = 24, limit_per_category: int = 10) -> dict[str, list[dict]]:
     """Return recent posts grouped by category for the daily briefing."""
     cutoff = datetime.utcfromtimestamp(datetime.utcnow().timestamp() - hours * 3600).isoformat()
-    categories = ["ai", "web3", "venture", "us_stock", "hk_stock"]
+    categories = ["ai", "papers", "web3", "venture", "us_stock"]
     result = {}
     with get_conn() as conn:
         for cat in categories:

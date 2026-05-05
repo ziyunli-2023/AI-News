@@ -60,6 +60,46 @@ def _fmt_post(p: dict) -> str:
     return "\n".join(lines)
 
 
+def _fmt_paper(p: dict) -> str:
+    """Format a paper row with score/upvotes/authors."""
+    import json as _json
+    score = float(p.get("paper_score") or 0)
+    uv    = int(p.get("hf_upvotes")   or 0)
+    hn    = int(p.get("hn_score")     or 0)
+    arxiv = p.get("arxiv_id") or ""
+    pdf   = p.get("pdf_url")  or ""
+    date  = (p.get("published") or "")[:10]
+
+    badges = [f"score={score:.1f}"]
+    if uv:    badges.append(f"👍{uv}")
+    if hn:    badges.append(f"HN={hn}")
+    if arxiv: badges.append(f"arXiv:{arxiv}")
+    head = "📄 [{src}]  {date}  ({tags})".format(
+        src=p.get("source") or "", date=date, tags=" · ".join(badges),
+    )
+
+    lines = [head, p.get("title") or ""]
+    if p.get("title_zh"):
+        lines.append(f"   {p['title_zh']}")
+    try:
+        authors = _json.loads(p.get("authors") or "[]")
+        if isinstance(authors, list) and authors:
+            head_authors = ", ".join(authors[:3])
+            tail = f" +{len(authors) - 3}" if len(authors) > 3 else ""
+            lines.append(f"👥 {head_authors}{tail}")
+    except Exception:
+        pass
+
+    if p.get("url"):
+        lines.append(p["url"])
+    if pdf and pdf != p.get("url"):
+        lines.append(f"PDF: {pdf}")
+    if p.get("summary"):
+        s = p["summary"]
+        lines.append(s[:240] + ("…" if len(s) > 240 else ""))
+    return "\n".join(lines)
+
+
 # ── MCP server ─────────────────────────────────────────────────────────────
 app = Server("ai-news-monitor")
 
@@ -154,6 +194,39 @@ async def list_tools() -> list[types.Tool]:
             name="list_tracked_sources",
             description="List all tracked X accounts and RSS feeds.",
             inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="get_trending_papers",
+            description=(
+                "Get trending AI papers ranked by paper_score. The score blends "
+                "tier (大模型公司技术报告 +15, 顶级实验室 +5), HF Daily Papers "
+                "upvotes, HN discussion, and recency. Use this to surface the "
+                "most-discussed and most-technical recent work."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "hours":      {"type": "integer", "default": 72,  "description": "Look-back window in hours (default 72)"},
+                    "limit":      {"type": "integer", "default": 10,  "description": "Max papers to return (default 10, max 50)"},
+                    "min_score":  {"type": "number",  "default": 0.0, "description": "Minimum paper_score (default 0)"},
+                },
+            },
+        ),
+        types.Tool(
+            name="get_papers_by_lab",
+            description=(
+                "Get papers from a specific AI lab or model company by source-name "
+                "substring match. Examples: 'DeepSeek', 'Qwen', 'Apple', 'AI2', "
+                "'字节', '智谱', 'Moonshot'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "lab":   {"type": "string",  "description": "Lab name substring (matches against the source field)"},
+                    "limit": {"type": "integer", "default": 20, "description": "Max papers to return (default 20, max 100)"},
+                },
+                "required": ["lab"],
+            },
         ),
     ]
 
@@ -305,6 +378,39 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
             f"Latest post  : {s['latest_post_at'] or 'none'}"
         )
         return [types.TextContent(type="text", text=text)]
+
+    # ── get_trending_papers ────────────────────────────────────────────────
+    elif name == "get_trending_papers":
+        hours     = int(arguments.get("hours", 72))
+        limit     = min(int(arguments.get("limit", 10)), 50)
+        min_score = float(arguments.get("min_score", 0.0))
+        papers    = storage.get_trending_papers(hours=hours, limit=limit, min_score=min_score)
+        if not papers:
+            return [types.TextContent(
+                type="text",
+                text=f"No trending papers in the last {hours}h (min_score={min_score}).",
+            )]
+        header = (f"## 🔥 Trending papers (last {hours}h, top {len(papers)} by paper_score)\n"
+                  f"Tier weighting: 大模型公司 +15 · 顶级实验室 +5 · HF upvotes (log) · HN (log) · recency.\n")
+        body = "\n\n---\n\n".join(_fmt_paper(p) for p in papers)
+        return [types.TextContent(type="text", text=header + "\n" + body)]
+
+    # ── get_papers_by_lab ──────────────────────────────────────────────────
+    elif name == "get_papers_by_lab":
+        lab   = arguments.get("lab", "").strip()
+        limit = min(int(arguments.get("limit", 20)), 100)
+        if not lab:
+            return [types.TextContent(type="text", text="Please specify a lab name.")]
+        papers = storage.get_papers_by_lab(lab_label=lab, limit=limit)
+        if not papers:
+            return [types.TextContent(
+                type="text",
+                text=f"No papers found with source matching '{lab}'. "
+                     f"Try names like 'DeepSeek', 'Qwen', 'Apple', 'AI2', '字节', '智谱'.",
+            )]
+        header = f"## 📄 Papers from {lab} ({len(papers)} found)\n"
+        body = "\n\n---\n\n".join(_fmt_paper(p) for p in papers)
+        return [types.TextContent(type="text", text=header + "\n" + body)]
 
     # ── list_tracked_sources ───────────────────────────────────────────────
     elif name == "list_tracked_sources":

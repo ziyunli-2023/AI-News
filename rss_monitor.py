@@ -18,6 +18,12 @@ import storage
 logger = logging.getLogger(__name__)
 
 _STRIP_TAGS = re.compile(r"<[^>]+>")
+_ARXIV_ID_RE = re.compile(r"arxiv\.org/abs/([0-9]{4}\.[0-9]{4,6}(?:v\d+)?)", re.I)
+
+
+def _extract_arxiv_id(url: str) -> str | None:
+    m = _ARXIV_ID_RE.search(url or "")
+    return m.group(1).split("v")[0] if m else None
 
 
 def _parse_date(entry) -> str:
@@ -53,9 +59,13 @@ def _clean_html(text: str) -> str:
 
 
 def _passes_arxiv_filter(title: str, summary: str) -> bool:
-    """Only store arXiv papers relevant to AI/LLM topics."""
+    """Only store arXiv papers that (a) match a topic keyword AND
+    (b) mention a top-tier lab/institution in title/summary.
+    Cuts ~80% of daily arXiv volume while keeping frontier work."""
     combined = (title + " " + summary).lower()
-    return any(kw in combined for kw in config.ARXIV_KEYWORDS)
+    if not any(kw in combined for kw in config.ARXIV_KEYWORDS):
+        return False
+    return any(org in combined for org in config.ARXIV_AUTHOR_WHITELIST)
 
 
 def _fetch_feed(feed_cfg: dict) -> list[dict]:
@@ -93,6 +103,11 @@ def _fetch_feed(feed_cfg: dict) -> list[dict]:
         if is_arxiv and not _passes_arxiv_filter(title, summary):
             continue
 
+        # Mark paper-type posts. Includes arXiv (always) and lab tech-report
+        # feeds (anything in category "papers").
+        is_paper = bool(is_arxiv or category == "papers")
+        arxiv_id = _extract_arxiv_id(link) if is_paper else None
+
         posts.append(
             {
                 "id": _entry_id(entry, name),
@@ -104,6 +119,8 @@ def _fetch_feed(feed_cfg: dict) -> list[dict]:
                 "feed_priority": tier,
                 "category": category,
                 "alert": alert,
+                "is_paper": is_paper,
+                "arxiv_id": arxiv_id,
             }
         )
     return posts
