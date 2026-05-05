@@ -455,15 +455,48 @@ class EmailNotifier:
   </div>""")
 
         if posts:
-            html_parts.append(f"<h2 style='font-size:16px;color:#0f3460;border-bottom:2px solid #0f3460;padding-bottom:8px;'>📰 Blog Posts ({len(posts)})</h2>")
+            html_parts.append(
+                f"<h2 style='font-size:16px;color:#0f3460;border-bottom:2px solid #0f3460;"
+                f"padding-bottom:8px;margin-top:28px;'>📰 Blog Posts ({len(posts)})</h2>"
+            )
+
+            # Group posts by category. Papers were already pulled out earlier
+            # (handled by the trending-papers section), so the categories here
+            # are AI / Web3 / 创投 / 美股. Anything with an unknown/missing
+            # category falls under 其他.
+            from collections import defaultdict
+            by_cat: dict[str, list[dict]] = defaultdict(list)
             for b in posts:
-                p = b["item"]
-                date = p.get("published", "")[:16].replace("T", " ") if p.get("published") else ""
-                title_zh   = p.get("title_zh", "")
-                summary_zh = p.get("summary_zh", "")
-                zh_title_html   = f"<div style='font-size:13px;color:#888;margin-top:3px;'>{title_zh}</div>" if title_zh else ""
-                zh_summary_html = f"<p style='margin:6px 0 0;font-size:12px;color:#aaa;line-height:1.5;'>{summary_zh[:200]}…</p>" if summary_zh else ""
-                html_parts.append(f"""
+                cat = (b["item"].get("category") or "ai").strip() or "ai"
+                by_cat[cat].append(b)
+
+            CATEGORY_ORDER = [
+                ("ai",       "🤖", "AI 前沿"),
+                ("web3",     "⛓️", "Web3"),
+                ("venture",  "💰", "创投圈"),
+                ("us_stock", "🇺🇸", "美股"),
+            ]
+            seen_cats = {c for c, _, _ in CATEGORY_ORDER}
+            extras = [(c, "📌", c) for c in by_cat.keys() if c not in seen_cats]
+
+            for cat_key, icon, cat_label in CATEGORY_ORDER + extras:
+                items = by_cat.get(cat_key, [])
+                if not items:
+                    continue
+                html_parts.append(
+                    f"<h3 style='font-size:14px;color:#0f3460;margin:20px 0 10px;"
+                    f"padding:6px 12px;background:#eef2f8;border-radius:6px;"
+                    f"display:inline-block;'>{icon} {cat_label} "
+                    f"<span style='color:#888;font-weight:500;'>({len(items)})</span></h3>"
+                )
+                for b in items:
+                    p = b["item"]
+                    date = p.get("published", "")[:16].replace("T", " ") if p.get("published") else ""
+                    title_zh   = p.get("title_zh", "")
+                    summary_zh = p.get("summary_zh", "")
+                    zh_title_html   = f"<div style='font-size:13px;color:#888;margin-top:3px;'>{title_zh}</div>" if title_zh else ""
+                    zh_summary_html = f"<p style='margin:6px 0 0;font-size:12px;color:#aaa;line-height:1.5;'>{summary_zh[:200]}…</p>" if summary_zh else ""
+                    html_parts.append(f"""
   <div style='margin-bottom:18px;padding:16px;border-left:4px solid #0f3460;
               background:#f8f9fa;border-radius:0 8px 8px 0;'>
     <div style='font-size:11px;color:#888;margin-bottom:6px;'>{p['source']} · {date}</div>
