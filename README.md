@@ -16,7 +16,32 @@ AI News Monitor collects updates from leading AI researchers, labs, founders, an
 
 ## Quick Start
 
-### 1. Clone & install dependencies
+### Choose Your Deployment Method
+
+**🐳 Docker (Recommended for Production)**
+- Production-ready with HTTPS/SSL
+- Nginx reverse proxy
+- Automated backups
+- One-command deployment
+
+👉 **[Docker Deployment Guide →](README-DOCKER.md)** | **[Quick Reference](DOCKER-QUICKREF.md)**
+
+```bash
+# Local development
+./scripts/setup.sh
+
+# Production with SSL
+USE_LETSENCRYPT=true DOMAIN=your-domain.com SSL_EMAIL=you@email.com ./scripts/setup.sh
+```
+
+**🐍 Python (Simple Setup)**
+- Direct Python execution
+- Good for development/testing
+- No containerization needed
+
+### Python Installation
+
+**1. Clone & install dependencies**
 
 ```bash
 git clone https://github.com/ziyunli-2023/AI-News.git
@@ -127,6 +152,88 @@ ps aux | grep main.py | grep -v grep
 ```
 
 If the output is empty, the process is not running. Restart it manually or via launchd (see below).
+
+---
+
+## 7x24 Running and Auto-Start
+
+For long-running deployment, use the Docker stack. `docker-compose.yml` already sets `restart: unless-stopped`, and you can add a `systemd` unit so the stack starts automatically after boot.
+
+### Linux / WSL recommended setup
+
+```bash
+# 1. Prepare config
+cp .env.example .env
+
+# 2. Initial setup and first start
+./scripts/setup.sh
+
+# 3. Install systemd auto-start service
+./scripts/install-systemd-service.sh
+```
+
+Useful commands:
+
+```bash
+sudo systemctl status ai-news-docker
+sudo systemctl restart ai-news-docker
+sudo journalctl -u ai-news-docker -f
+docker compose ps
+docker compose logs -f
+```
+
+### WSL extra step
+
+If `systemctl` is unavailable in WSL, enable systemd first:
+
+```bash
+./scripts/enable-wsl-systemd.sh
+```
+
+Then run `wsl.exe --shutdown` in Windows PowerShell, reopen WSL, and rerun `./scripts/install-systemd-service.sh`.
+
+### Windows boot auto-start for WSL
+
+`systemd` only helps after the WSL distro has started. If you want the service to start automatically when Windows boots, add a Windows Scheduled Task that launches WSL and starts `ai-news-docker.service`.
+
+Current detected distro example:
+
+```powershell
+Ubuntu-22.04
+```
+
+Run this in **Windows PowerShell as Administrator**:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\liziy\Code\AI-News\scripts\windows\register-ai-news-startup-task.ps1 -DistroName "Ubuntu-22.04" -ProjectDir "C:\Users\liziy\Code\AI-News"
+```
+
+This creates a startup task named `AI-News-WSL-Autostart`. It runs:
+
+```powershell
+C:\Users\liziy\Code\AI-News\scripts\windows\start-ai-news-wsl.ps1
+```
+
+That script launches WSL as `root` and executes:
+
+```bash
+systemctl start ai-news-docker.service
+```
+
+Useful Windows-side commands:
+
+```powershell
+Start-ScheduledTask -TaskName "AI-News-WSL-Autostart"
+Get-ScheduledTask -TaskName "AI-News-WSL-Autostart"
+schtasks /Query /TN "AI-News-WSL-Autostart"
+```
+
+Useful WSL-side checks:
+
+```bash
+systemctl status ai-news-docker.service --no-pager
+docker compose ps
+```
 
 ---
 

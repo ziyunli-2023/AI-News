@@ -3,9 +3,13 @@
 
 # Database (user-specific scraped data)
 news.db
+*.db
+*.db-journal
+*.db-wal
 
 # Logs
 logs/
+*.log
 
 # Python
 __pycache__/
@@ -21,6 +25,7 @@ build/
 
 # Claude Code
 .claude/
+.codex
 
 # macOS
 .DS_Store
@@ -28,3 +33,12 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# Docker data
+data/
+backups/
+ssl/
+nginx/logs/
+
+# Docker override files
+docker-compose.override.yml
