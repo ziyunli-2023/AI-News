@@ -63,6 +63,8 @@ def _lazy_translate(posts: list[dict], tweets: list[dict]):
     for p in posts:
         if not p.get("title_zh") and p.get("title"):
             targets.append(("post", p, "title_zh", p["title"]))
+        if p.get("category") == "polymarket":
+            continue  # summary contains Yes/No odds — keep in English
         if not p.get("summary_zh") and p.get("summary"):
             targets.append(("post", p, "summary_zh", p["summary"][:500]))
     for t in tweets:
@@ -106,6 +108,12 @@ def get_news(limit: int = 30, source: str = None, category: str = None):
     # Papers mode: skip tweets, return is_paper rows sorted by paper_score (not by date).
     if category == "papers":
         posts = storage.get_trending_papers(hours=24 * 30, limit=limit)
+        _lazy_translate(posts, [])
+        return [{"type": "post", "date": p.get("published", ""), "data": p} for p in posts]
+
+    # Polymarket mode: posts only, sorted by fetched_at (most recently refreshed first).
+    if category == "polymarket":
+        posts = storage.get_latest_posts_by_category("polymarket", limit=limit)
         _lazy_translate(posts, [])
         return [{"type": "post", "date": p.get("published", ""), "data": p} for p in posts]
 
@@ -288,8 +296,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .refresh-btn { background: none; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 12px; padding: 3px 9px; cursor: pointer; transition: border-color .12s, color .12s; }
   .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-  .briefing-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-  @media (max-width: 1100px) { .briefing-grid { grid-template-columns: repeat(3, 1fr); } }
+  .briefing-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+  @media (max-width: 1300px) { .briefing-grid { grid-template-columns: repeat(3, 1fr); } }
   @media (max-width: 719px)  { .briefing-grid { grid-template-columns: 1fr; } }
 
   .b-section { background: var(--surface2); border-radius: 8px; padding: 12px 13px; border: 1px solid var(--border); }
@@ -316,6 +324,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .tag-tweet { background: var(--tweet-bg); color: var(--tweet); }
   .tag-t1    { background: var(--green-bg); color: var(--green); }
   .tag-cat   { background: var(--surface2); color: var(--muted); }
+  .tag-polymarket  { background: #f0fdf4; color: #15803d; }
+  [data-theme="dark"] .tag-polymarket { background: #052e16; color: #4ade80; }
   .tag-paper-uv    { background: #fef3c7; color: #b45309; }
   .tag-paper-arxiv { background: #ede9fe; color: #6d28d9; font-family: ui-monospace, monospace; }
   .tag-paper-co    { background: #fce7f3; color: #be185d; }
@@ -418,6 +428,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <button class="nav-btn" onclick="setCategory('web3',this)"><span data-i18n="navWeb3">🔗 Web3</span><span class="cnt" id="cnt-web3">0</span></button>
     <button class="nav-btn" onclick="setCategory('venture',this)"><span data-i18n="navVenture">💼 创投</span><span class="cnt" id="cnt-venture">0</span></button>
     <button class="nav-btn" onclick="setCategory('us_stock',this)"><span data-i18n="navStocks">📈 美股</span><span class="cnt" id="cnt-us_stock">0</span></button>
+    <button class="nav-btn" onclick="setCategory('polymarket',this)"><span data-i18n="navPolymarket">🎯 Polymarket</span><span class="cnt" id="cnt-polymarket">0</span></button>
 
     <div class="nav-section" data-i18n="secFilter" style="margin-top:6px;">筛选</div>
     <button class="nav-btn" onclick="setFilter('posts',this)"><span data-i18n="navPosts">📰 博客文章</span><span class="cnt" id="cnt-posts">0</span></button>
@@ -483,6 +494,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <button class="bnav-btn" onclick="setCategoryMobile('web3',this)"><span>🔗</span><label>Web3</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('venture',this)"><span>💼</span><label data-i18n="bnavVenture">创投</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('us_stock',this)"><span>📈</span><label data-i18n="bnavStocks">美股</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('polymarket',this)"><span>🎯</span><label data-i18n="bnavPolymarket">预测</label></button>
   <button class="bnav-btn" onclick="toggleSidebar()"><span>☰</span><label data-i18n="bnavMore">更多</label></button>
 </nav>
 
@@ -491,7 +503,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 const STRINGS = {
   zh: {
     navAll:'🌐 全部', navAI:'🤖 AI', navPapers:'📄 论文', navWeb3:'🔗 Web3',
-    navVenture:'💼 创投', navStocks:'📈 美股', navPosts:'📰 博客文章',
+    navVenture:'💼 创投', navStocks:'📈 美股', navPolymarket:'🎯 Polymarket', navPosts:'📰 博客文章',
     navTweets:'𝕏 推文', navPodcasts:'🎙 播客',
     secCategories:'分类', secFilter:'筛选', secSources:'来源',
     statPosts:'文章', statTweets:'推文', statLatest:'最新',
@@ -503,16 +515,16 @@ const STRINGS = {
     updatedAt: v => v + ' 更新',
     readMore:'阅读原文 →', viewTweet:'查看推文 →',
     noContent:'暂无内容，监控器正在抓取…', noCategory:'该分类暂无内容',
-    loadFail:'加载失败', loadingPapers:'⏳ 正在加载论文…', loading:'加载中…',
+    loadFail:'加载失败', loadingPapers:'⏳ 正在加载论文…', loadingPolymarket:'⏳ 正在加载预测市场…', loading:'加载中…',
     noDigest:'暂无摘要', searchEmpty: q => '未找到 "' + q + '"',
     noPodcasts:'暂无跟踪的播客', podWebsite:'🌐 官网', podAlerts:'🔔 即时通知',
     recentEps:'最近更新', noEps:'暂无记录，等待下次抓取…',
-    featured:'精选',
+    featured:'精选', polymarketTag:'🎯 预测市场', bnavPolymarket:'预测',
     bnavAll:'全部', bnavPapers:'论文', bnavVenture:'创投', bnavStocks:'美股', bnavMore:'更多',
   },
   en: {
     navAll:'🌐 All', navAI:'🤖 AI', navPapers:'📄 Papers', navWeb3:'🔗 Web3',
-    navVenture:'💼 Venture', navStocks:'📈 US Stocks', navPosts:'📰 Posts',
+    navVenture:'💼 Venture', navStocks:'📈 US Stocks', navPolymarket:'🎯 Polymarket', navPosts:'📰 Posts',
     navTweets:'𝕏 Tweets', navPodcasts:'🎙 Podcasts',
     secCategories:'Categories', secFilter:'Filter', secSources:'Sources',
     statPosts:'Posts', statTweets:'Tweets', statLatest:'Latest',
@@ -524,11 +536,11 @@ const STRINGS = {
     updatedAt: v => 'Updated ' + v,
     readMore:'Read more →', viewTweet:'View tweet →',
     noContent:'No content yet, fetching…', noCategory:'No items in this category',
-    loadFail:'Load failed', loadingPapers:'⏳ Loading papers…', loading:'Loading…',
+    loadFail:'Load failed', loadingPapers:'⏳ Loading papers…', loadingPolymarket:'⏳ Loading prediction markets…', loading:'Loading…',
     noDigest:'No digest available', searchEmpty: q => 'No results for "' + q + '"',
     noPodcasts:'No podcasts tracked', podWebsite:'🌐 Website', podAlerts:'🔔 Alerts',
     recentEps:'Recent Episodes', noEps:'No episodes yet…',
-    featured:'Featured',
+    featured:'Featured', polymarketTag:'🎯 Prediction', bnavPolymarket:'Predict',
     bnavAll:'All', bnavPapers:'Papers', bnavVenture:'VC', bnavStocks:'Stocks', bnavMore:'More',
   }
 };
@@ -539,7 +551,12 @@ function setLang(l) {
   lang = l;
   localStorage.setItem('lang', l);
   applyLang();
-  renderFeed();
+  // Server-fetched category views must be re-fetched; others re-render from allItems
+  if (currentFilter === 'category:papers' || currentFilter === 'category:polymarket') {
+    setCategory(currentFilter.slice(9), null);
+  } else {
+    renderFeed();
+  }
   loadBriefing();
   loadDigest();
 }
@@ -679,7 +696,11 @@ function makeCard(item, isNew) {
   }
   meta.appendChild(srcTag);
 
-  if (isPost && d.feed_priority === 1) {
+  if (isPost && d.category === 'polymarket') {
+    const pm = document.createElement('span');
+    pm.className = 'tag tag-polymarket'; pm.textContent = t('polymarketTag');
+    meta.appendChild(pm);
+  } else if (isPost && d.feed_priority === 1) {
     const t1 = document.createElement('span');
     t1.className = 'tag tag-t1'; t1.textContent = t('featured');
     meta.appendChild(t1);
@@ -810,6 +831,10 @@ function makeCard(item, isNew) {
 function filterItems(items) {
   if (currentFilter === 'posts')  return items.filter(i => i.type === 'post');
   if (currentFilter === 'tweets') return items.filter(i => i.type === 'tweet');
+  if (currentFilter.startsWith('category:')) {
+    const cat = currentFilter.slice(9);
+    return items.filter(i => i.data.category === cat);
+  }
   return items;
 }
 function showPanels(show) {
@@ -833,7 +858,7 @@ function updateCounts() {
   document.getElementById('cnt-all').textContent    = allItems.length;
   document.getElementById('cnt-posts').textContent  = allItems.filter(i=>i.type==='post').length;
   document.getElementById('cnt-tweets').textContent = allItems.filter(i=>i.type==='tweet').length;
-  ['ai','papers','web3','venture','us_stock'].forEach(cat => {
+  ['ai','papers','web3','venture','us_stock','polymarket'].forEach(cat => {
     const el = document.getElementById('cnt-' + cat);
     if (el) el.textContent = allItems.filter(i=>i.data.category===cat).length;
   });
@@ -847,11 +872,12 @@ async function setCategory(cat, btn) {
   const feed = document.getElementById('cardFeed');
   feed.textContent = '';
 
-  // Papers mode: fetch sorted-by-score from server (not by date).
-  if (cat === 'papers') {
-    feed.appendChild(makeEmptyEl('⏳', t('loadingPapers')));
+  // Papers / Polymarket: fetch from server for proper ordering.
+  if (cat === 'papers' || cat === 'polymarket') {
+    const loadMsg = cat === 'papers' ? t('loadingPapers') : t('loadingPolymarket');
+    feed.appendChild(makeEmptyEl('⏳', loadMsg));
     try {
-      const res = await fetch('/api/news?category=papers&limit=50');
+      const res = await fetch('/api/news?category=' + cat + '&limit=50');
       const items = await res.json();
       feed.textContent = '';
       if (!items.length) { feed.appendChild(makeEmptyEl('📭', t('noCategory'))); return; }

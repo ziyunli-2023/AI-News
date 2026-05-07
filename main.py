@@ -14,6 +14,7 @@ import ai_processor
 from rss_monitor import RSSMonitor
 from nitter_monitor import NitterMonitor
 from papers_monitor import PapersMonitor
+from polymarket_monitor import PolymarketMonitor
 from notifier import EmailNotifier
 from web_server import app, push_new_item
 
@@ -93,6 +94,9 @@ async def main():
     papers_mon = PapersMonitor(on_new_post=on_new_post)
     papers_mon.start()
 
+    polymarket_mon = PolymarketMonitor(on_new_post=on_new_post)
+    polymarket_mon.start()
+
     stop_event = threading.Event()
     start_translation_worker(stop_event)
 
@@ -112,6 +116,7 @@ async def main():
         rss_mon.stop()
         nitter_mon.stop()
         papers_mon.stop()
+        polymarket_mon.stop()
         notifier.stop()
         stop_event.set()
 

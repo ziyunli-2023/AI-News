@@ -203,6 +203,9 @@ PAPER_LAB_ORG_IDS = {
     "baichuan-inc":      "百川 技术报告",
 }
 
+# Polymarket polling interval (seconds)
+POLYMARKET_POLL_INTERVAL = 1800   # 30 min
+
 # Paper monitor polling intervals (seconds)
 PAPERS_DAILY_INTERVAL    = 1800   # 30 min — refetch HF Daily Papers list
 PAPERS_LAB_INTERVAL      = 3600   # 60 min — refetch each lab's HF org papers

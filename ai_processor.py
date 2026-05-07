@@ -140,18 +140,20 @@ def generate_daily_briefing(posts_by_category: dict, lang: str = "zh") -> dict:
 
     CATEGORY_META = {
         "zh": {
-            "ai":       {"label": "AI 前沿",  "icon": "🤖"},
-            "papers":   {"label": "AI 论文",  "icon": "📄"},
-            "web3":     {"label": "Web3",     "icon": "⛓️"},
-            "venture":  {"label": "创投圈",   "icon": "💰"},
-            "us_stock": {"label": "美股",     "icon": "🇺🇸"},
+            "ai":          {"label": "AI 前沿",  "icon": "🤖"},
+            "papers":      {"label": "AI 论文",  "icon": "📄"},
+            "web3":        {"label": "Web3",     "icon": "⛓️"},
+            "venture":     {"label": "创投圈",   "icon": "💰"},
+            "us_stock":    {"label": "美股",     "icon": "🇺🇸"},
+            "polymarket":  {"label": "预测市场", "icon": "🎯"},
         },
         "en": {
-            "ai":       {"label": "AI",          "icon": "🤖"},
-            "papers":   {"label": "Papers",      "icon": "📄"},
-            "web3":     {"label": "Web3",        "icon": "⛓️"},
-            "venture":  {"label": "Venture",     "icon": "💰"},
-            "us_stock": {"label": "US Stocks",   "icon": "🇺🇸"},
+            "ai":          {"label": "AI",               "icon": "🤖"},
+            "papers":      {"label": "Papers",           "icon": "📄"},
+            "web3":        {"label": "Web3",             "icon": "⛓️"},
+            "venture":     {"label": "Venture",          "icon": "💰"},
+            "us_stock":    {"label": "US Stocks",        "icon": "🇺🇸"},
+            "polymarket":  {"label": "Prediction Markets","icon": "🎯"},
         },
     }
     meta_map = CATEGORY_META.get(lang, CATEGORY_META["zh"])
@@ -166,8 +168,13 @@ def generate_daily_briefing(posts_by_category: dict, lang: str = "zh") -> dict:
             continue
         lines = [f"[{meta['label']}]"]
         for p in posts[:8]:
-            title = p.get("title") if lang == "en" else (p.get("title_zh") or p.get("title", ""))
-            lines.append(f"- {title}")
+            if cat == "polymarket":
+                # Summary contains probability + volume — include it so AI can generate useful bullets
+                summary = (p.get("summary") or "").split(" | Ends")[0]  # drop deadline noise
+                lines.append(f"- {p.get('title', '')} ({summary})")
+            else:
+                title = p.get("title") if lang == "en" else (p.get("title_zh") or p.get("title", ""))
+                lines.append(f"- {title}")
         sections_input.append("\n".join(lines))
 
     news_text = "\n\n".join(sections_input)
@@ -184,11 +191,12 @@ Generate 3-4 bullet points for each category. Requirements:
 - Return strictly in this JSON format, no extra content:
 
 {{"sections": [
-  {{"category": "ai",       "points": ["...", "...", "..."]}},
-  {{"category": "papers",   "points": ["...", "...", "..."]}},
-  {{"category": "web3",     "points": ["...", "...", "..."]}},
-  {{"category": "venture",  "points": ["...", "...", "..."]}},
-  {{"category": "us_stock", "points": ["...", "...", "..."]}}
+  {{"category": "ai",          "points": ["...", "...", "..."]}},
+  {{"category": "papers",      "points": ["...", "...", "..."]}},
+  {{"category": "web3",        "points": ["...", "...", "..."]}},
+  {{"category": "venture",     "points": ["...", "...", "..."]}},
+  {{"category": "us_stock",    "points": ["...", "...", "..."]}},
+  {{"category": "polymarket",  "points": ["...", "...", "..."]}}
 ]}}"""
     else:
         prompt = f"""以下是今日各板块的最新资讯标题：
@@ -198,15 +206,17 @@ Generate 3-4 bullet points for each category. Requirements:
 请为每个板块生成 3~4 条要点，要求：
 - 每条要点 30 字以内，简洁直接
 - 重点突出具体事件、数字、名称
+- 预测市场板块：重点体现市场预测概率和成交量，例如"美伊达成永久和平协议概率 16%，24h成交量 240万美元"
 - 没有数据的板块输出"暂无重要动态"
 - 严格按以下 JSON 格式返回，不要添加其他内容：
 
 {{"sections": [
-  {{"category": "ai",       "points": ["...", "...", "..."]}},
-  {{"category": "papers",   "points": ["...", "...", "..."]}},
-  {{"category": "web3",     "points": ["...", "...", "..."]}},
-  {{"category": "venture",  "points": ["...", "...", "..."]}},
-  {{"category": "us_stock", "points": ["...", "...", "..."]}}
+  {{"category": "ai",          "points": ["...", "...", "..."]}},
+  {{"category": "papers",      "points": ["...", "...", "..."]}},
+  {{"category": "web3",        "points": ["...", "...", "..."]}},
+  {{"category": "venture",     "points": ["...", "...", "..."]}},
+  {{"category": "us_stock",    "points": ["...", "...", "..."]}},
+  {{"category": "polymarket",  "points": ["...", "...", "..."]}}
 ]}}"""
 
     try:

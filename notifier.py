@@ -35,6 +35,8 @@ def _ensure_translations(posts: list[dict], tweets: list[dict]):
         p = b["item"]
         if not p.get("title_zh") and p.get("title"):
             post_targets.append((p, "title_zh", p["title"]))
+        if p.get("category") == "polymarket":
+            continue  # summary contains Yes/No odds — keep in English
         if not p.get("summary_zh") and p.get("summary"):
             post_targets.append((p, "summary_zh", p["summary"][:500]))
 
@@ -258,9 +260,14 @@ class EmailNotifier:
         # Papers are a bonus section sourced separately (top-N by score, not
         # constrained by the digest window). Hide them from the regular Posts
         # section so they aren't shown twice.
-        non_paper = [b for b in all_posts if not b["item"].get("is_paper")]
-        podcasts  = [b for b in non_paper if b["item"]["source"] in _podcast_sources]
-        posts     = [b for b in non_paper if b["item"]["source"] not in _podcast_sources]
+        non_paper      = [b for b in all_posts if not b["item"].get("is_paper")]
+        podcasts       = [b for b in non_paper if b["item"]["source"] in _podcast_sources]
+        polymarket_top = storage.get_latest_posts_by_category("polymarket", limit=8)
+        polymarket_ids = {p["id"] for p in polymarket_top}
+        posts          = [b for b in non_paper
+                          if b["item"]["source"] not in _podcast_sources
+                          and b["item"].get("id") not in polymarket_ids
+                          and b["item"].get("category") != "polymarket"]
 
         # Top trending papers in last 24h, regardless of digest window.
         trending_paper_rows = storage.get_trending_papers(hours=24, limit=5, min_score=10.0)
@@ -299,7 +306,7 @@ class EmailNotifier:
     <p style='margin:4px 0 0;font-size:13px;opacity:.8;'>{now_str} &nbsp;·&nbsp; {len(batch)} new item(s)</p>
   </div>
   <div style='background:#f4f6fb;padding:16px 24px;border-radius:0 0 10px 10px;margin-bottom:24px;'>
-    <span style='font-size:13px;color:#555;'>🎙 {len(podcasts)} 播客 &nbsp;&nbsp; 📰 {len(posts)} blog posts &nbsp;&nbsp; 📄 {len(trending_papers)} 热门论文</span>
+    <span style='font-size:13px;color:#555;'>🎙 {len(podcasts)} 播客 &nbsp;&nbsp; 📰 {len(posts)} blog posts &nbsp;&nbsp; 📄 {len(trending_papers)} 热门论文 &nbsp;&nbsp; 🎯 {len(polymarket_top)} 预测市场</span>
   </div>
 """)
         # Digest summary block — bullet points, one per line
@@ -434,6 +441,54 @@ class EmailNotifier:
     </div>
   </div>""")
 
+        # ── Polymarket section ────────────────────────────────────────────
+        if polymarket_top:
+            html_parts.append(
+                f"<h2 style='font-size:16px;color:#15803d;border-bottom:2px solid #15803d;"
+                f"padding-bottom:8px;margin-top:28px;'>🎯 预测市场热榜 ({len(polymarket_top)})</h2>"
+            )
+            for p in polymarket_top:
+                summary = p.get("summary") or ""
+                # Extract probability line (first segment before " | ")
+                prob_line = summary.split(" | ")[0] if " | " in summary else ""
+                vol_line  = ""
+                for seg in summary.split(" | "):
+                    if "Vol" in seg:
+                        vol_line = seg
+                        break
+                deadline_line = ""
+                for seg in summary.split(" | "):
+                    if "Ends" in seg:
+                        deadline_line = seg
+                        break
+                prob_html = (
+                    f"<div style='font-size:13px;font-weight:600;color:#15803d;margin-top:6px;'>{prob_line}</div>"
+                    if prob_line else ""
+                )
+                meta_parts = [s for s in [vol_line, deadline_line] if s]
+                meta_html = (
+                    f"<div style='font-size:12px;color:#888;margin-top:4px;'>{' &nbsp;·&nbsp; '.join(meta_parts)}</div>"
+                    if meta_parts else ""
+                )
+                title_en = p.get('title') or ''
+                title_zh = p.get('title_zh') or ''
+                title_zh_html = (
+                    f"<div style='font-size:13px;color:#166534;margin-top:3px;'>{title_zh}</div>"
+                    if title_zh else ""
+                )
+                html_parts.append(f"""
+  <div style='margin-bottom:14px;padding:14px 16px;border-left:4px solid #15803d;
+              background:#f0fdf4;border-radius:0 8px 8px 0;'>
+    <a href='{p.get('url') or ''}' style='font-size:14px;font-weight:700;color:#14532d;
+       text-decoration:none;line-height:1.4;display:block;'>{title_en}</a>
+    {title_zh_html}
+    {prob_html}
+    {meta_html}
+    <a href='{p.get('url') or ''}' style='display:inline-block;margin-top:10px;font-size:12px;
+       color:#fff;background:#15803d;padding:5px 12px;border-radius:4px;text-decoration:none;'>
+      查看市场 →</a>
+  </div>""")
+
         # ── Podcast section ────────────────────────────────────────────────
         if podcasts:
             html_parts.append(f"<h2 style='font-size:16px;color:#7c3aed;border-bottom:2px solid #7c3aed;padding-bottom:8px;margin-bottom:14px;'>🎙 新播客 ({len(podcasts)})</h2>")
@@ -471,10 +526,11 @@ class EmailNotifier:
                 by_cat[cat].append(b)
 
             CATEGORY_ORDER = [
-                ("ai",       "🤖", "AI 前沿"),
-                ("web3",     "⛓️", "Web3"),
-                ("venture",  "💰", "创投圈"),
-                ("us_stock", "🇺🇸", "美股"),
+                ("ai",          "🤖", "AI 前沿"),
+                ("web3",        "⛓️", "Web3"),
+                ("venture",     "💰", "创投圈"),
+                ("us_stock",    "🇺🇸", "美股"),
+                ("polymarket",  "🎯", "预测市场"),
             ]
             seen_cats = {c for c, _, _ in CATEGORY_ORDER}
             extras = [(c, "📌", c) for c in by_cat.keys() if c not in seen_cats]

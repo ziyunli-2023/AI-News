@@ -403,6 +403,15 @@ def get_latest_tweets(limit: int = 20, username: str = None, category: str = Non
         return [dict(r) for r in rows]
 
 
+def get_latest_posts_by_category(category: str, limit: int = 30) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM blog_posts WHERE category=? ORDER BY fetched_at DESC LIMIT ?",
+            (category, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_latest_posts(limit: int = 20, source: str = None) -> list[dict]:
     with get_conn() as conn:
         if source:
@@ -486,7 +495,7 @@ def record_digest_sent(date_str: str, hour: int):
 def get_recent_posts_by_category(hours: int = 24, limit_per_category: int = 10) -> dict[str, list[dict]]:
     """Return recent posts grouped by category for the daily briefing."""
     cutoff = datetime.utcfromtimestamp(datetime.utcnow().timestamp() - hours * 3600).isoformat()
-    categories = ["ai", "papers", "web3", "venture", "us_stock"]
+    categories = ["ai", "papers", "web3", "venture", "us_stock", "polymarket"]
     result = {}
     with get_conn() as conn:
         for cat in categories:
