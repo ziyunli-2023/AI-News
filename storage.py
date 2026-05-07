@@ -32,6 +32,7 @@ def _migrate(conn):
         "ALTER TABLE blog_posts ADD COLUMN authors TEXT",
         "ALTER TABLE blog_posts ADD COLUMN pdf_url TEXT",
         "ALTER TABLE blog_posts ADD COLUMN paper_score REAL DEFAULT 0",
+        "ALTER TABLE page_visits ADD COLUMN week TEXT",
     ):
         try:
             conn.execute(ddl)
@@ -110,6 +111,17 @@ def init_db():
                 PRIMARY KEY (date, hour)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS page_visits (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                visited_at TEXT NOT NULL,
+                date       TEXT NOT NULL,
+                month      TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_visits_date  ON page_visits(date)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_visits_month ON page_visits(month)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_visits_week  ON page_visits(week)")
 
 
 def _content_hash(title: str) -> str:
@@ -507,6 +519,37 @@ def get_recent_posts_by_category(hours: int = 24, limit_per_category: int = 10) 
             ).fetchall()
             result[cat] = [dict(r) for r in rows]
     return result
+
+
+def record_visit():
+    now = datetime.utcnow()
+    iso = now.isocalendar()
+    week_str = f"{iso[0]}-W{iso[1]:02d}"
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO page_visits (visited_at, date, week, month) VALUES (?, ?, ?, ?)",
+            (now.isoformat(), now.strftime("%Y-%m-%d"), week_str, now.strftime("%Y-%m")),
+        )
+
+
+def get_visit_stats() -> dict:
+    now = datetime.utcnow()
+    today = now.strftime("%Y-%m-%d")
+    month = now.strftime("%Y-%m")
+    iso = now.isocalendar()
+    week_str = f"{iso[0]}-W{iso[1]:02d}"
+    with get_conn() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM page_visits").fetchone()[0]
+        today_count = conn.execute(
+            "SELECT COUNT(*) FROM page_visits WHERE date=?", (today,)
+        ).fetchone()[0]
+        week_count = conn.execute(
+            "SELECT COUNT(*) FROM page_visits WHERE week=?", (week_str,)
+        ).fetchone()[0]
+        month_count = conn.execute(
+            "SELECT COUNT(*) FROM page_visits WHERE month=?", (month,)
+        ).fetchone()[0]
+    return {"total": total, "today": today_count, "this_week": week_count, "this_month": month_count}
 
 
 def get_stats() -> dict:

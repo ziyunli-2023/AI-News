@@ -144,6 +144,11 @@ def health():
     return {"status": "ok", "feeds": len(config.RSS_FEEDS)}
 
 
+@app.get("/api/visit-stats")
+def visit_stats():
+    return storage.get_visit_stats()
+
+
 @app.get("/api/podcasts")
 def get_podcasts():
     podcasts = [f for f in config.RSS_FEEDS if f.get("podcast")]
@@ -442,6 +447,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="stat-row"><span class="stat-label" data-i18n="statPosts">文章</span><span class="stat-val" id="statPosts">—</span></div>
       <div class="stat-row"><span class="stat-label" data-i18n="statTweets">推文</span><span class="stat-val" id="statTweets">—</span></div>
       <div class="stat-row"><span class="stat-label" data-i18n="statLatest">最新</span><span class="stat-val" id="statLast">—</span></div>
+      <div class="stat-row" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)"><span class="stat-label" data-i18n="statVisitTotal">总访问</span><span class="stat-val" id="statVisitTotal">—</span></div>
+      <div class="stat-row"><span class="stat-label" data-i18n="statVisitToday">今日</span><span class="stat-val" id="statVisitToday">—</span></div>
+      <div class="stat-row"><span class="stat-label" data-i18n="statVisitWeek">本周</span><span class="stat-val" id="statVisitWeek">—</span></div>
+      <div class="stat-row"><span class="stat-label" data-i18n="statVisitMonth">本月</span><span class="stat-val" id="statVisitMonth">—</span></div>
       <div class="status-text" id="statusText">连接中…</div>
     </div>
   </aside>
@@ -507,6 +516,7 @@ const STRINGS = {
     navTweets:'𝕏 推文', navPodcasts:'🎙 播客',
     secCategories:'分类', secFilter:'筛选', secSources:'来源',
     statPosts:'文章', statTweets:'推文', statLatest:'最新',
+    statVisitTotal:'总访问', statVisitToday:'今日', statVisitWeek:'本周', statVisitMonth:'本月',
     connecting:'连接中…', connected:'实时连接', reconnecting:'重连中…',
     searchPlaceholder:'搜索新闻…', newBadge:'↑ 有新内容',
     digestTitle:'📋 资讯摘要', briefingTitle:'⚡ 每日要闻速报',
@@ -528,6 +538,7 @@ const STRINGS = {
     navTweets:'𝕏 Tweets', navPodcasts:'🎙 Podcasts',
     secCategories:'Categories', secFilter:'Filter', secSources:'Sources',
     statPosts:'Posts', statTweets:'Tweets', statLatest:'Latest',
+    statVisitTotal:'Total visits', statVisitToday:'Today', statVisitWeek:'This week', statVisitMonth:'This month',
     connecting:'Connecting…', connected:'Live', reconnecting:'Reconnecting…',
     searchPlaceholder:'Search news…', newBadge:'↑ New items',
     digestTitle:'📋 News Digest', briefingTitle:'⚡ Daily Briefing',
@@ -640,11 +651,18 @@ async function loadNews() {
   renderFeed(); updateCounts(); updateStats();
 }
 async function updateStats() {
-  const s = await fetch('/api/stats').then(r => r.json());
+  const [s, v] = await Promise.all([
+    fetch('/api/stats').then(r => r.json()),
+    fetch('/api/visit-stats').then(r => r.json()),
+  ]);
   document.getElementById('statPosts').textContent = s.post_count.toLocaleString();
   document.getElementById('statTweets').textContent = s.tweet_count.toLocaleString();
   const last = s.latest_post_at || s.latest_tweet_at;
   document.getElementById('statLast').textContent = last ? last.slice(0,16).replace('T',' ') : '—';
+  document.getElementById('statVisitTotal').textContent = v.total.toLocaleString();
+  document.getElementById('statVisitToday').textContent = v.today.toLocaleString();
+  document.getElementById('statVisitWeek').textContent = v.this_week.toLocaleString();
+  document.getElementById('statVisitMonth').textContent = v.this_month.toLocaleString();
 }
 
 // ── Render ────────────────────────────────────────────────────────────────
@@ -1105,4 +1123,5 @@ loadNews();
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
+    storage.record_visit()
     return HTMLResponse(content=DASHBOARD_HTML)
