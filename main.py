@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import sys
 import threading
 
 import uvicorn
@@ -39,7 +41,7 @@ def make_callbacks(notifier: EmailNotifier):
 
 
 def start_translation_worker(stop_event: threading.Event):
-    """Background thread: every 5 min, translate untranslated posts in batches of 5."""
+    """Background thread: every 30 min, translate untranslated posts in batches of 5."""
     if not config.DEEPSEEK_API_KEY:
         logger.warning("DEEPSEEK_API_KEY not set — translation worker disabled")
         return
@@ -63,7 +65,7 @@ def start_translation_worker(stop_event: threading.Event):
                     if stop_event.is_set():
                         break
                 logger.info("Translation worker: translated %d post(s)", len(posts))
-            stop_event.wait(300)  # 5 minutes
+            stop_event.wait(1800)  # 30 minutes
 
     t = threading.Thread(target=_run, daemon=True, name="translation-worker")
     t.start()
@@ -116,5 +118,21 @@ async def main():
 
 _loop = None
 
+_LOCKFILE = "/tmp/ai-news.lock"
+
+def _acquire_lock():
+    """Exit immediately if another instance is already running."""
+    import fcntl
+    lock = open(_LOCKFILE, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(f"Another instance is already running (lock: {_LOCKFILE}). Exiting.")
+        sys.exit(1)
+    lock.write(str(os.getpid()))
+    lock.flush()
+    return lock  # keep reference so lock is held until process exits
+
 if __name__ == "__main__":
+    _lock = _acquire_lock()
     asyncio.run(main())

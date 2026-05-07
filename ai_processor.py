@@ -129,7 +129,7 @@ def translate_texts(texts: list[str]) -> list[str]:
         return left + right
 
 
-def generate_daily_briefing(posts_by_category: dict) -> dict:
+def generate_daily_briefing(posts_by_category: dict, lang: str = "zh") -> dict:
     """
     Generate a structured daily briefing with bullet points per category.
     Input: {category: [post_dicts]} from storage.get_recent_posts_by_category()
@@ -139,28 +139,59 @@ def generate_daily_briefing(posts_by_category: dict) -> dict:
         return {"sections": []}
 
     CATEGORY_META = {
-        "ai":       {"label": "AI 前沿",  "icon": "🤖"},
-        "papers":   {"label": "AI 论文",  "icon": "📄"},
-        "web3":     {"label": "Web3",     "icon": "⛓️"},
-        "venture":  {"label": "创投圈",   "icon": "💰"},
-        "us_stock": {"label": "美股",     "icon": "🇺🇸"},
+        "zh": {
+            "ai":       {"label": "AI 前沿",  "icon": "🤖"},
+            "papers":   {"label": "AI 论文",  "icon": "📄"},
+            "web3":     {"label": "Web3",     "icon": "⛓️"},
+            "venture":  {"label": "创投圈",   "icon": "💰"},
+            "us_stock": {"label": "美股",     "icon": "🇺🇸"},
+        },
+        "en": {
+            "ai":       {"label": "AI",          "icon": "🤖"},
+            "papers":   {"label": "Papers",      "icon": "📄"},
+            "web3":     {"label": "Web3",        "icon": "⛓️"},
+            "venture":  {"label": "Venture",     "icon": "💰"},
+            "us_stock": {"label": "US Stocks",   "icon": "🇺🇸"},
+        },
     }
+    meta_map = CATEGORY_META.get(lang, CATEGORY_META["zh"])
 
     # Build news text per category
     sections_input = []
-    for cat, meta in CATEGORY_META.items():
+    for cat, meta in meta_map.items():
         posts = posts_by_category.get(cat, [])
         if not posts:
-            sections_input.append(f"【{meta['label']}】暂无数据")
+            no_data = "No data" if lang == "en" else "暂无数据"
+            sections_input.append(f"[{meta['label']}] {no_data}")
             continue
-        lines = [f"【{meta['label']}】"]
+        lines = [f"[{meta['label']}]"]
         for p in posts[:8]:
-            lines.append(f"- {p.get('title_zh') or p.get('title', '')}")
+            title = p.get("title") if lang == "en" else (p.get("title_zh") or p.get("title", ""))
+            lines.append(f"- {title}")
         sections_input.append("\n".join(lines))
 
     news_text = "\n\n".join(sections_input)
 
-    prompt = f"""以下是今日各板块的最新资讯标题：
+    if lang == "en":
+        prompt = f"""The following are today's latest news headlines by category:
+
+{news_text}
+
+Generate 3-4 bullet points for each category. Requirements:
+- Each bullet under 20 words, concise and direct
+- Highlight specific events, numbers, and names
+- For categories with no data, output "No major updates"
+- Return strictly in this JSON format, no extra content:
+
+{{"sections": [
+  {{"category": "ai",       "points": ["...", "...", "..."]}},
+  {{"category": "papers",   "points": ["...", "...", "..."]}},
+  {{"category": "web3",     "points": ["...", "...", "..."]}},
+  {{"category": "venture",  "points": ["...", "...", "..."]}},
+  {{"category": "us_stock", "points": ["...", "...", "..."]}}
+]}}"""
+    else:
+        prompt = f"""以下是今日各板块的最新资讯标题：
 
 {news_text}
 
@@ -193,7 +224,7 @@ def generate_daily_briefing(posts_by_category: dict) -> dict:
         data = json.loads(raw[start:end + 1])
         # Attach label/icon metadata
         for sec in data.get("sections", []):
-            meta = CATEGORY_META.get(sec["category"], {})
+            meta = meta_map.get(sec["category"], {})
             sec["label"] = meta.get("label", sec["category"])
             sec["icon"] = meta.get("icon", "📌")
         return data
@@ -202,18 +233,17 @@ def generate_daily_briefing(posts_by_category: dict) -> dict:
         return {"sections": []}
 
 
-def generate_digest_summary(items: list[dict]) -> list[str]:
+def generate_digest_summary(items: list[dict], lang: str = "zh") -> list[str]:
     """
-    Generate a bullet-point Chinese digest of a batch of news items.
+    Generate a bullet-point digest of a batch of news items.
     Input: list of {"type": "post"|"tweet", "item"|"data": {...}} dicts.
-    Returns: list of short Chinese bullets (3-6 points), or [] on failure.
+    Returns: list of short bullets (3-6 points), or [] on failure.
     """
     if not config.DEEPSEEK_API_KEY or not items:
         return []
 
     lines = []
     for item in items[:30]:
-        # Support both wrapper shapes: notifier uses "item", web_server uses "data"
         d = item.get("item") or item.get("data") or item
         if item.get("type") == "tweet":
             lines.append(f"- [Tweet @{d.get('username','')}] {d.get('text','')[:100]}")
@@ -221,7 +251,18 @@ def generate_digest_summary(items: list[dict]) -> list[str]:
             lines.append(f"- [{d.get('source','')}] {d.get('title','')}")
     news_list = "\n".join(lines)
 
-    prompt = f"""以下是今天的AI资讯列表：
+    if lang == "en":
+        prompt = f"""The following is today's AI news list:
+
+{news_list}
+
+Extract 3-6 key highlights in English, one per line. Requirements:
+- Each point under 20 words
+- Focus on specific developments/topics, avoid generalizations
+- Return strictly as a JSON array, no extra text:
+["highlight1", "highlight2", "highlight3"]"""
+    else:
+        prompt = f"""以下是今天的AI资讯列表：
 
 {news_list}
 

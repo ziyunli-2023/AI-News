@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from typing import Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -13,6 +14,12 @@ import config
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI News Monitor")
+
+_CACHE_TTL = 30 * 60  # 30 minutes
+_briefing_cache: dict = {}   # keyed by lang
+_briefing_cache_at: dict = {}
+_digest_cache: dict = {}     # keyed by lang
+_digest_cache_at: dict = {}
 
 # ── WebSocket connection manager ───────────────────────────────────────────
 class ConnectionManager:
@@ -146,23 +153,34 @@ def get_podcasts():
 
 
 @app.get("/api/digest-summary")
-def digest_summary():
-    """Generate an on-demand AI digest summary of the latest news."""
+def digest_summary(lang: str = "zh"):
+    """Return cached AI digest; regenerate if cache is older than 30 min."""
+    if _digest_cache.get(lang) is not None and time.time() - _digest_cache_at.get(lang, 0) < _CACHE_TTL:
+        return {"summary": _digest_cache[lang]}
     import ai_processor
     posts  = storage.get_latest_posts(limit=20)
     tweets = storage.get_latest_tweets(limit=10)
     items  = [{"type": "post",  "data": p} for p in posts]
     items += [{"type": "tweet", "data": t} for t in tweets]
-    summary = ai_processor.generate_digest_summary(items)
-    return {"summary": summary}
+    result = ai_processor.generate_digest_summary(items, lang=lang)
+    if result:
+        _digest_cache[lang] = result
+        _digest_cache_at[lang] = time.time()
+    return {"summary": result}
 
 
 @app.get("/api/briefing")
-def daily_briefing():
-    """Generate structured daily briefing with sections: AI, 论文, Web3, 创投, 美股."""
+def daily_briefing(lang: str = "zh"):
+    """Return cached daily briefing; regenerate if cache is older than 30 min."""
+    if _briefing_cache.get(lang) is not None and time.time() - _briefing_cache_at.get(lang, 0) < _CACHE_TTL:
+        return _briefing_cache[lang]
     import ai_processor
     posts_by_cat = storage.get_recent_posts_by_category(hours=24, limit_per_category=10)
-    return ai_processor.generate_daily_briefing(posts_by_cat)
+    result = ai_processor.generate_daily_briefing(posts_by_cat, lang=lang)
+    if result.get("sections"):
+        _briefing_cache[lang] = result
+        _briefing_cache_at[lang] = time.time()
+    return result
 
 
 # ── WebSocket ──────────────────────────────────────────────────────────────
@@ -272,7 +290,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   .briefing-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
   @media (max-width: 1100px) { .briefing-grid { grid-template-columns: repeat(3, 1fr); } }
-  @media (max-width: 720px)  { .briefing-grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 719px)  { .briefing-grid { grid-template-columns: 1fr; } }
 
   .b-section { background: var(--surface2); border-radius: 8px; padding: 12px 13px; border: 1px solid var(--border); }
   .b-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 9px; }
@@ -350,38 +368,69 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .ep-title a { color: inherit; text-decoration: none; }
   .ep-title a:hover { color: var(--accent); text-decoration: underline; }
   .ep-empty { font-size: 12px; color: var(--muted); font-style: italic; }
+
+  /* ── Mobile ── */
+  .hamburger-btn { display: none; background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 18px; width: 36px; height: 36px; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+  .hamburger-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .lang-pill { display: none; align-items: center; justify-content: center; background: var(--accent); color: #fff; border: none; border-radius: 20px; font-size: 13px; font-weight: 700; padding: 0 14px; height: 36px; cursor: pointer; flex-shrink: 0; letter-spacing: .03em; transition: opacity .15s; }
+  .lang-pill:hover { opacity: .85; }
+  .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 199; }
+  .overlay.show { display: block; }
+  .bottom-nav { display: none; }
+  @media (max-width: 719px) {
+    .sidebar { position: fixed; top: 0; left: 0; height: 100%; width: 260px; z-index: 200; transform: translateX(-260px); transition: transform .25s ease; overflow-y: auto; }
+    .sidebar.open { transform: translateX(0); box-shadow: 4px 0 24px rgba(0,0,0,.18); }
+    .hamburger-btn { display: flex; }
+    .lang-pill { display: flex; }
+    .topbar { padding: 10px 12px; }
+    .feed { padding: 10px 12px; padding-bottom: 70px; }
+    .card { padding: 12px 14px; }
+    .card-title { font-size: 14px; }
+    .briefing-panel, .digest-panel { padding: 12px 14px; }
+    .bottom-nav { display: flex; position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--border); z-index: 100; padding-bottom: env(safe-area-inset-bottom); }
+  }
+  @media (min-width: 720px) { .bottom-nav { display: none !important; } }
+  .bnav-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; background: none; border: none; color: var(--muted); font-size: 10px; padding: 7px 2px; cursor: pointer; transition: color .12s; }
+  .bnav-btn span { font-size: 18px; line-height: 1.2; }
+  .bnav-btn label { cursor: pointer; }
+  .bnav-btn.active { color: var(--accent); }
 </style>
 </head>
 <body>
 <div class="layout">
+  <div class="overlay" id="overlay" onclick="closeSidebar()"></div>
 
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-logo">
       <h1><span class="status-dot" id="statusDot"></span>News Monitor</h1>
-      <button class="theme-btn" id="themeBtn" title="切换主题" onclick="toggleTheme()">☀</button>
+      <div style="display:flex;gap:5px;align-items:center">
+        <button class="theme-btn" id="langBtn" onclick="toggleLang()" title="切换语言">EN</button>
+        <button class="theme-btn" id="themeBtn" onclick="toggleTheme()">☀</button>
+      </div>
     </div>
 
-    <div class="nav-section">筛选</div>
-    <button class="nav-btn active" onclick="setFilter('all',this)">🌐 全部 <span class="cnt" id="cnt-all">0</span></button>
-    <button class="nav-btn" onclick="setFilter('posts',this)">📰 博客文章 <span class="cnt" id="cnt-posts">0</span></button>
-    <button class="nav-btn" onclick="setFilter('tweets',this)">𝕏 推文 <span class="cnt" id="cnt-tweets">0</span></button>
-    <button class="nav-btn" id="navPodcast" onclick="showPodcasts(this)">🎙 播客</button>
+    <button class="nav-btn active" onclick="setFilter('all',this)"><span data-i18n="navAll">🌐 全部</span><span class="cnt" id="cnt-all">0</span></button>
 
-    <div class="nav-section" style="margin-top:6px;">分类</div>
-    <button class="nav-btn" onclick="setCategory('ai',this)">🤖 AI <span class="cnt" id="cnt-ai">0</span></button>
-    <button class="nav-btn" onclick="setCategory('papers',this)">📄 论文 <span class="cnt" id="cnt-papers">0</span></button>
-    <button class="nav-btn" onclick="setCategory('web3',this)">🔗 Web3 <span class="cnt" id="cnt-web3">0</span></button>
-    <button class="nav-btn" onclick="setCategory('venture',this)">💼 创投 <span class="cnt" id="cnt-venture">0</span></button>
-    <button class="nav-btn" onclick="setCategory('us_stock',this)">📈 美股 <span class="cnt" id="cnt-us_stock">0</span></button>
+    <div class="nav-section" data-i18n="secCategories" style="margin-top:6px;">分类</div>
+    <button class="nav-btn" onclick="setCategory('ai',this)"><span data-i18n="navAI">🤖 AI</span><span class="cnt" id="cnt-ai">0</span></button>
+    <button class="nav-btn" onclick="setCategory('papers',this)"><span data-i18n="navPapers">📄 论文</span><span class="cnt" id="cnt-papers">0</span></button>
+    <button class="nav-btn" onclick="setCategory('web3',this)"><span data-i18n="navWeb3">🔗 Web3</span><span class="cnt" id="cnt-web3">0</span></button>
+    <button class="nav-btn" onclick="setCategory('venture',this)"><span data-i18n="navVenture">💼 创投</span><span class="cnt" id="cnt-venture">0</span></button>
+    <button class="nav-btn" onclick="setCategory('us_stock',this)"><span data-i18n="navStocks">📈 美股</span><span class="cnt" id="cnt-us_stock">0</span></button>
 
-    <div class="nav-section" style="margin-top:6px;">来源</div>
+    <div class="nav-section" data-i18n="secFilter" style="margin-top:6px;">筛选</div>
+    <button class="nav-btn" onclick="setFilter('posts',this)"><span data-i18n="navPosts">📰 博客文章</span><span class="cnt" id="cnt-posts">0</span></button>
+    <button class="nav-btn" onclick="setFilter('tweets',this)"><span data-i18n="navTweets">𝕏 推文</span><span class="cnt" id="cnt-tweets">0</span></button>
+    <button class="nav-btn" id="navPodcast" onclick="showPodcasts(this)"><span data-i18n="navPodcasts">🎙 播客</span></button>
+
+    <div class="nav-section" data-i18n="secSources" style="margin-top:6px;">来源</div>
     <div id="sourceList"></div>
 
     <div class="stats-box">
-      <div class="stat-row"><span class="stat-label">文章</span><span class="stat-val" id="statPosts">—</span></div>
-      <div class="stat-row"><span class="stat-label">推文</span><span class="stat-val" id="statTweets">—</span></div>
-      <div class="stat-row"><span class="stat-label">最新</span><span class="stat-val" id="statLast">—</span></div>
+      <div class="stat-row"><span class="stat-label" data-i18n="statPosts">文章</span><span class="stat-val" id="statPosts">—</span></div>
+      <div class="stat-row"><span class="stat-label" data-i18n="statTweets">推文</span><span class="stat-val" id="statTweets">—</span></div>
+      <div class="stat-row"><span class="stat-label" data-i18n="statLatest">最新</span><span class="stat-val" id="statLast">—</span></div>
       <div class="status-text" id="statusText">连接中…</div>
     </div>
   </aside>
@@ -389,44 +438,143 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Main -->
   <div class="main">
     <div class="topbar">
+      <button class="hamburger-btn" onclick="toggleSidebar()">☰</button>
       <div class="search-wrap">
         <span class="search-icon">🔍</span>
         <input type="text" id="searchInput" placeholder="搜索新闻…" oninput="onSearch(this.value)">
       </div>
+      <button class="lang-pill" id="langPill" onclick="toggleLang()">EN</button>
       <div class="new-pill" id="newBadge" onclick="scrollToTop()">↑ 有新内容</div>
     </div>
 
     <div class="feed" id="feed">
-      <!-- 速报 -->
-      <div class="briefing-panel">
-        <div class="panel-header">
-          <div class="panel-title">⚡ 每日要闻速报</div>
-          <div class="panel-actions">
-            <span class="panel-meta" id="briefingMeta"></span>
-            <button class="refresh-btn" onclick="loadBriefing()">↻ 刷新</button>
-          </div>
-        </div>
-        <div id="briefingBody"><span class="panel-loading">正在生成速报…</span></div>
-      </div>
-
       <!-- AI 摘要 -->
       <div class="digest-panel">
         <div class="panel-header">
-          <div class="panel-title">📋 资讯摘要</div>
+          <div class="panel-title" data-i18n="digestTitle">📋 资讯摘要</div>
           <div class="panel-actions">
-            <button class="refresh-btn" onclick="loadDigest()">↻ 刷新</button>
+            <button class="refresh-btn" data-i18n="refresh" onclick="loadDigest()">↻ 刷新</button>
           </div>
         </div>
-        <div class="digest-text" id="digestText"><span class="panel-loading">正在生成摘要…</span></div>
+        <div class="digest-text" id="digestText"><span class="panel-loading" data-i18n="loadingDigest">正在生成摘要…</span></div>
       </div>
 
-      <div id="cardFeed"><div class="loading-text">加载中…</div></div>
+      <!-- 速报 -->
+      <div class="briefing-panel">
+        <div class="panel-header">
+          <div class="panel-title" data-i18n="briefingTitle">⚡ 每日要闻速报</div>
+          <div class="panel-actions">
+            <span class="panel-meta" id="briefingMeta"></span>
+            <button class="refresh-btn" data-i18n="refresh" onclick="loadBriefing()">↻ 刷新</button>
+          </div>
+        </div>
+        <div id="briefingBody"><span class="panel-loading" data-i18n="loadingBriefing">正在生成速报…</span></div>
+      </div>
+
+      <div id="cardFeed"><div class="loading-text" data-i18n="loading">加载中…</div></div>
     </div>
   </div>
 </div>
 
+<nav class="bottom-nav" id="bottomNav">
+  <button class="bnav-btn" onclick="setFilter('all',null);bnav(this)"><span>🌐</span><label data-i18n="bnavAll">全部</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('ai',this)"><span>🤖</span><label>AI</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('papers',this)"><span>📄</span><label data-i18n="bnavPapers">论文</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('web3',this)"><span>🔗</span><label>Web3</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('venture',this)"><span>💼</span><label data-i18n="bnavVenture">创投</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('us_stock',this)"><span>📈</span><label data-i18n="bnavStocks">美股</label></button>
+  <button class="bnav-btn" onclick="toggleSidebar()"><span>☰</span><label data-i18n="bnavMore">更多</label></button>
+</nav>
+
 <script>
+// ── i18n ──────────────────────────────────────────────────────────────────
+const STRINGS = {
+  zh: {
+    navAll:'🌐 全部', navAI:'🤖 AI', navPapers:'📄 论文', navWeb3:'🔗 Web3',
+    navVenture:'💼 创投', navStocks:'📈 美股', navPosts:'📰 博客文章',
+    navTweets:'𝕏 推文', navPodcasts:'🎙 播客',
+    secCategories:'分类', secFilter:'筛选', secSources:'来源',
+    statPosts:'文章', statTweets:'推文', statLatest:'最新',
+    connecting:'连接中…', connected:'实时连接', reconnecting:'重连中…',
+    searchPlaceholder:'搜索新闻…', newBadge:'↑ 有新内容',
+    digestTitle:'📋 资讯摘要', briefingTitle:'⚡ 每日要闻速报',
+    refresh:'↻ 刷新', loadingDigest:'正在生成摘要…', loadingBriefing:'正在生成速报…',
+    noData:'暂无数据', digestFail:'摘要生成失败', briefingFail:'速报生成失败',
+    updatedAt: v => v + ' 更新',
+    readMore:'阅读原文 →', viewTweet:'查看推文 →',
+    noContent:'暂无内容，监控器正在抓取…', noCategory:'该分类暂无内容',
+    loadFail:'加载失败', loadingPapers:'⏳ 正在加载论文…', loading:'加载中…',
+    noDigest:'暂无摘要', searchEmpty: q => '未找到 "' + q + '"',
+    noPodcasts:'暂无跟踪的播客', podWebsite:'🌐 官网', podAlerts:'🔔 即时通知',
+    recentEps:'最近更新', noEps:'暂无记录，等待下次抓取…',
+    featured:'精选',
+    bnavAll:'全部', bnavPapers:'论文', bnavVenture:'创投', bnavStocks:'美股', bnavMore:'更多',
+  },
+  en: {
+    navAll:'🌐 All', navAI:'🤖 AI', navPapers:'📄 Papers', navWeb3:'🔗 Web3',
+    navVenture:'💼 Venture', navStocks:'📈 US Stocks', navPosts:'📰 Posts',
+    navTweets:'𝕏 Tweets', navPodcasts:'🎙 Podcasts',
+    secCategories:'Categories', secFilter:'Filter', secSources:'Sources',
+    statPosts:'Posts', statTweets:'Tweets', statLatest:'Latest',
+    connecting:'Connecting…', connected:'Live', reconnecting:'Reconnecting…',
+    searchPlaceholder:'Search news…', newBadge:'↑ New items',
+    digestTitle:'📋 News Digest', briefingTitle:'⚡ Daily Briefing',
+    refresh:'↻ Refresh', loadingDigest:'Generating digest…', loadingBriefing:'Generating briefing…',
+    noData:'No data', digestFail:'Digest failed', briefingFail:'Briefing failed',
+    updatedAt: v => 'Updated ' + v,
+    readMore:'Read more →', viewTweet:'View tweet →',
+    noContent:'No content yet, fetching…', noCategory:'No items in this category',
+    loadFail:'Load failed', loadingPapers:'⏳ Loading papers…', loading:'Loading…',
+    noDigest:'No digest available', searchEmpty: q => 'No results for "' + q + '"',
+    noPodcasts:'No podcasts tracked', podWebsite:'🌐 Website', podAlerts:'🔔 Alerts',
+    recentEps:'Recent Episodes', noEps:'No episodes yet…',
+    featured:'Featured',
+    bnavAll:'All', bnavPapers:'Papers', bnavVenture:'VC', bnavStocks:'Stocks', bnavMore:'More',
+  }
+};
+let lang = localStorage.getItem('lang') || 'zh';
+function t(key, arg) { const v = STRINGS[lang][key]; return typeof v === 'function' ? v(arg) : (v || key); }
+function toggleLang() { setLang(lang === 'zh' ? 'en' : 'zh'); }
+function setLang(l) {
+  lang = l;
+  localStorage.setItem('lang', l);
+  applyLang();
+  renderFeed();
+  loadBriefing();
+  loadDigest();
+}
+function applyLang() {
+  const label = lang === 'zh' ? 'EN' : '中';
+  document.getElementById('langBtn').textContent = label;
+  document.getElementById('langPill').textContent = label;
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+  document.getElementById('searchInput').placeholder = t('searchPlaceholder');
+  document.getElementById('newBadge').textContent = t('newBadge');
+}
+(function initLang() {
+  const label = lang === 'zh' ? 'EN' : '中';
+  document.getElementById('langBtn').textContent = label;
+  document.getElementById('langPill').textContent = label;
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+  document.getElementById('searchInput').placeholder = t('searchPlaceholder');
+  document.getElementById('newBadge').textContent = t('newBadge');
+})();
+
 let allItems = [], currentFilter = 'all', ws;
+
+// ── Mobile Sidebar ────────────────────────────────────────────────────────
+function toggleSidebar() {
+  document.querySelector('.sidebar').classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('show');
+}
+function closeSidebar() {
+  document.querySelector('.sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('show');
+}
+function bnav(el) {
+  document.querySelectorAll('.bnav-btn').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+}
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 function applyTheme(t) {
@@ -451,11 +599,11 @@ function connectWS() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen = () => {
     document.getElementById('statusDot').style.background = 'var(--green)';
-    document.getElementById('statusText').textContent = '实时连接';
+    document.getElementById('statusText').textContent = t('connected');
   };
   ws.onclose = () => {
     document.getElementById('statusDot').style.background = 'var(--red)';
-    document.getElementById('statusText').textContent = '重连中…';
+    document.getElementById('statusText').textContent = t('reconnecting');
     setTimeout(connectWS, 3000);
   };
   ws.onmessage = (e) => {
@@ -494,7 +642,7 @@ function renderFeed() {
     icon.className = 'empty-icon';
     icon.textContent = '📭';
     const msg = document.createElement('div');
-    msg.textContent = '暂无内容，监控器正在抓取…';
+    msg.textContent = t('noContent');
     empty.appendChild(icon); empty.appendChild(msg);
     feed.appendChild(empty);
     return;
@@ -533,7 +681,7 @@ function makeCard(item, isNew) {
 
   if (isPost && d.feed_priority === 1) {
     const t1 = document.createElement('span');
-    t1.className = 'tag tag-t1'; t1.textContent = '精选';
+    t1.className = 'tag tag-t1'; t1.textContent = t('featured');
     meta.appendChild(t1);
   }
   if (!isPost && d.category) {
@@ -589,12 +737,12 @@ function makeCard(item, isNew) {
     titleEl.appendChild(a);
     div.appendChild(titleEl);
 
-    if (d.title_zh) {
+    if (lang === 'zh' && d.title_zh) {
       const zh = document.createElement('div');
       zh.className = 'card-title-zh'; zh.textContent = d.title_zh;
       div.appendChild(zh);
     }
-    if (d.summary_zh) {
+    if (lang === 'zh' && d.summary_zh) {
       const sz = document.createElement('div');
       sz.className = 'card-summary-zh'; sz.textContent = d.summary_zh;
       div.appendChild(sz);
@@ -607,7 +755,7 @@ function makeCard(item, isNew) {
     const footer = document.createElement('div');
     footer.className = 'card-footer';
     const link = document.createElement('a');
-    link.className = 'card-link'; link.href = d.url; link.target = '_blank'; link.textContent = '阅读原文 →';
+    link.className = 'card-link'; link.href = d.url; link.target = '_blank'; link.textContent = t('readMore');
     footer.appendChild(link);
     div.appendChild(footer);
 
@@ -639,7 +787,7 @@ function makeCard(item, isNew) {
     const txt = document.createElement('div');
     txt.className = 'tweet-text'; txt.textContent = d.text;
     div.appendChild(txt);
-    if (d.text_zh) {
+    if (lang === 'zh' && d.text_zh) {
       const tzh = document.createElement('div');
       tzh.className = 'tweet-text-zh'; tzh.textContent = d.text_zh;
       div.appendChild(tzh);
@@ -647,7 +795,7 @@ function makeCard(item, isNew) {
     const footer = document.createElement('div');
     footer.className = 'card-footer';
     const link = document.createElement('a');
-    link.className = 'card-link'; link.href = d.url || '#'; link.target = '_blank'; link.textContent = '查看推文 →';
+    link.className = 'card-link'; link.href = d.url || '#'; link.target = '_blank'; link.textContent = t('viewTweet');
     footer.appendChild(link);
     const eng = document.createElement('span');
     eng.className = 'card-eng';
@@ -664,11 +812,22 @@ function filterItems(items) {
   if (currentFilter === 'tweets') return items.filter(i => i.type === 'tweet');
   return items;
 }
+function showPanels(show) {
+  document.querySelector('.briefing-panel').style.display = show ? '' : 'none';
+  document.querySelector('.digest-panel').style.display = show ? '' : 'none';
+}
+function setCategoryMobile(cat, el) {
+  showPanels(false);
+  setCategory(cat, null);
+  bnav(el);
+}
 function setFilter(f, btn) {
   currentFilter = f;
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
+  showPanels(f === 'all');
   renderFeed();
+  closeSidebar();
 }
 function updateCounts() {
   document.getElementById('cnt-all').textContent    = allItems.length;
@@ -684,31 +843,33 @@ async function setCategory(cat, btn) {
   currentFilter = 'category:' + cat;
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
+  showPanels(false);
   const feed = document.getElementById('cardFeed');
   feed.textContent = '';
 
   // Papers mode: fetch sorted-by-score from server (not by date).
   if (cat === 'papers') {
-    feed.appendChild(makeEmptyEl('⏳', '正在加载论文…'));
+    feed.appendChild(makeEmptyEl('⏳', t('loadingPapers')));
     try {
       const res = await fetch('/api/news?category=papers&limit=50');
       const items = await res.json();
       feed.textContent = '';
-      if (!items.length) { feed.appendChild(makeEmptyEl('📭', '该分类暂无内容')); return; }
+      if (!items.length) { feed.appendChild(makeEmptyEl('📭', t('noCategory'))); return; }
       items.forEach(item => feed.appendChild(makeCard(item, false)));
     } catch (e) {
       feed.textContent = '';
-      feed.appendChild(makeEmptyEl('⚠', '加载失败'));
+      feed.appendChild(makeEmptyEl('⚠', t('loadFail')));
     }
     return;
   }
 
   const filtered = allItems.filter(i => i.data.category === cat);
   if (!filtered.length) {
-    feed.appendChild(makeEmptyEl('📭', '该分类暂无内容'));
+    feed.appendChild(makeEmptyEl('📭', t('noCategory')));
     return;
   }
   filtered.forEach(item => feed.appendChild(makeCard(item, false)));
+  closeSidebar();
 }
 function buildSourceList() {
   const counts = {};
@@ -734,17 +895,18 @@ function filterSource(src, btn) {
   const feed = document.getElementById('cardFeed');
   feed.textContent = '';
   allItems.filter(i => i.data.source === src).forEach(item => feed.appendChild(makeCard(item, false)));
+  closeSidebar();
 }
 
 // ── Briefing ──────────────────────────────────────────────────────────────
 async function loadBriefing() {
   const body = document.getElementById('briefingBody');
   const meta = document.getElementById('briefingMeta');
-  body.textContent = '正在生成速报…';
+  body.textContent = t('loadingBriefing');
   try {
-    const data = await fetch('/api/briefing').then(r => r.json());
+    const data = await fetch('/api/briefing?lang=' + lang).then(r => r.json());
     const sections = data.sections || [];
-    if (!sections.length) { body.textContent = '暂无数据'; return; }
+    if (!sections.length) { body.textContent = t('noData'); return; }
 
     const grid = document.createElement('div');
     grid.className = 'briefing-grid';
@@ -759,18 +921,19 @@ async function loadBriefing() {
     });
     body.textContent = '';
     body.appendChild(grid);
-    meta.textContent = new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}) + ' 更新';
-  } catch(e) { body.textContent = '速报生成失败'; }
+    const locale = lang === 'zh' ? 'zh-CN' : 'en-US';
+    meta.textContent = t('updatedAt', new Date().toLocaleTimeString(locale,{hour:'2-digit',minute:'2-digit'}));
+  } catch(e) { body.textContent = t('briefingFail'); }
 }
 
 // ── Digest ────────────────────────────────────────────────────────────────
 async function loadDigest() {
   const el = document.getElementById('digestText');
-  el.textContent = '正在生成摘要…';
+  el.textContent = t('loadingDigest');
   try {
-    const data = await fetch('/api/digest-summary').then(r => r.json());
+    const data = await fetch('/api/digest-summary?lang=' + lang).then(r => r.json());
     const bullets = Array.isArray(data.summary) ? data.summary : [];
-    if (!bullets.length) { el.textContent = '暂无摘要'; return; }
+    if (!bullets.length) { el.textContent = t('noDigest'); return; }
     el.textContent = '';
     const ul = document.createElement('ul');
     ul.style.margin = '0'; ul.style.paddingLeft = '20px';
@@ -781,7 +944,7 @@ async function loadDigest() {
       ul.appendChild(li);
     });
     el.appendChild(ul);
-  } catch(e) { el.textContent = '摘要生成失败'; }
+  } catch(e) { el.textContent = t('digestFail'); }
 }
 
 // ── Search ────────────────────────────────────────────────────────────────
@@ -796,7 +959,7 @@ async function onSearch(q) {
     if (!results.length) {
       const empty = document.createElement('div'); empty.className = 'empty';
       const icon = document.createElement('div'); icon.className = 'empty-icon'; icon.textContent = '🔍';
-      const msg = document.createElement('div'); msg.textContent = '未找到 "' + q + '"';
+      const msg = document.createElement('div'); msg.textContent = t('searchEmpty', q);
       empty.appendChild(icon); empty.appendChild(msg); feed.appendChild(empty);
       return;
     }
@@ -820,17 +983,18 @@ async function showPodcasts(btn) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   currentFilter = 'podcasts';
+  closeSidebar();
 
   const feed = document.getElementById('cardFeed');
   feed.textContent = '';
   const loading = document.createElement('div');
-  loading.className = 'loading-text'; loading.textContent = '加载中…';
+  loading.className = 'loading-text'; loading.textContent = t('loading');
   feed.appendChild(loading);
 
   try {
     const podcasts = await fetch('/api/podcasts').then(r => r.json());
     feed.textContent = '';
-    if (!podcasts.length) { feed.appendChild(makeEmptyEl('🎙', '暂无跟踪的播客')); return; }
+    if (!podcasts.length) { feed.appendChild(makeEmptyEl('🎙', t('noPodcasts'))); return; }
 
     podcasts.forEach(p => {
       const card = document.createElement('div');
@@ -848,7 +1012,7 @@ async function showPodcasts(btn) {
 
       if (p.site) {
         const a = document.createElement('a');
-        a.className = 'pod-link'; a.href = p.site; a.target = '_blank'; a.textContent = '🌐 官网';
+        a.className = 'pod-link'; a.href = p.site; a.target = '_blank'; a.textContent = t('podWebsite');
         links.appendChild(a);
       }
       const rss = document.createElement('a');
@@ -857,7 +1021,7 @@ async function showPodcasts(btn) {
 
       if (p.alert) {
         const badge = document.createElement('span');
-        badge.className = 'pod-link alert-badge'; badge.textContent = '🔔 即时通知';
+        badge.className = 'pod-link alert-badge'; badge.textContent = t('podAlerts');
         links.appendChild(badge);
       }
       info.appendChild(links);
@@ -865,12 +1029,12 @@ async function showPodcasts(btn) {
       card.appendChild(header);
 
       const eps = document.createElement('div'); eps.className = 'podcast-episodes';
-      const label = document.createElement('div'); label.className = 'ep-label'; label.textContent = '最近更新';
+      const label = document.createElement('div'); label.className = 'ep-label'; label.textContent = t('recentEps');
       eps.appendChild(label);
 
       if (!p.recent || !p.recent.length) {
         const empty = document.createElement('div');
-        empty.className = 'ep-empty'; empty.textContent = '暂无记录，等待下次抓取…';
+        empty.className = 'ep-empty'; empty.textContent = t('noEps');
         eps.appendChild(empty);
       } else {
         p.recent.forEach(ep => {
@@ -889,7 +1053,7 @@ async function showPodcasts(btn) {
     });
   } catch(e) {
     feed.textContent = '';
-    feed.appendChild(makeEmptyEl('⚠️', '加载失败'));
+    feed.appendChild(makeEmptyEl('⚠️', t('loadFail')));
   }
 }
 
@@ -904,9 +1068,10 @@ function scrollToTop() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
-loadNews(); connectWS(); loadBriefing(); loadDigest();
+connectWS(); loadBriefing(); loadDigest();
 setInterval(updateStats, 60000);
 setInterval(loadBriefing, 30 * 60 * 1000);
+loadNews();
 </script>
 </body>
 </html>"""
