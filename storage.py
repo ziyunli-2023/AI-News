@@ -417,11 +417,28 @@ def get_latest_tweets(limit: int = 20, username: str = None, category: str = Non
 
 def get_latest_posts_by_category(category: str, limit: int = 30) -> list[dict]:
     with get_conn() as conn:
+        fetch_limit = limit * 3 if category == "polymarket" else limit
         rows = conn.execute(
             "SELECT * FROM blog_posts WHERE category=? ORDER BY fetched_at DESC LIMIT ?",
-            (category, limit),
+            (category, fetch_limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        posts = [dict(r) for r in rows]
+        if category == "polymarket" and posts:
+            from polymarket_monitor import _global_score, _topic_cluster, _BLOCKED_TOPICS
+            posts = [p for p in posts if not any(b in p["title"].lower() for b in _BLOCKED_TOPICS)]
+            scored = [(p, _global_score(p["title"], 0)) for p in posts]
+            scored = [(p, s) for p, s in scored if s > 0]
+            scored.sort(key=lambda x: x[1], reverse=True)
+            cluster_counts: dict[str, int] = {}
+            deduped = []
+            for p, s in scored:
+                c = _topic_cluster(p["title"])
+                if cluster_counts.get(c, 0) >= 2:
+                    continue
+                cluster_counts[c] = cluster_counts.get(c, 0) + 1
+                deduped.append(p)
+            posts = deduped[:limit]
+        return posts
 
 
 def get_latest_posts(limit: int = 20, source: str = None) -> list[dict]:
@@ -515,9 +532,26 @@ def get_recent_posts_by_category(hours: int = 24, limit_per_category: int = 10) 
                 """SELECT * FROM blog_posts
                    WHERE category=? AND (published >= ? OR fetched_at >= ?)
                    ORDER BY published DESC LIMIT ?""",
-                (cat, cutoff, cutoff, limit_per_category),
+                (cat, cutoff, cutoff, limit_per_category * 3),
             ).fetchall()
-            result[cat] = [dict(r) for r in rows]
+            posts = [dict(r) for r in rows]
+            if cat == "polymarket" and posts:
+                from polymarket_monitor import _global_score, _topic_cluster, _BLOCKED_TOPICS
+                posts = [p for p in posts if not any(b in p["title"].lower() for b in _BLOCKED_TOPICS)]
+                scored = [(p, _global_score(p["title"], 0)) for p in posts]
+                scored = [(p, s) for p, s in scored if s > 0]
+                scored.sort(key=lambda x: x[1], reverse=True)
+                # Topic dedup: max 2 per cluster
+                cluster_counts: dict[str, int] = {}
+                deduped = []
+                for p, s in scored:
+                    c = _topic_cluster(p["title"])
+                    if cluster_counts.get(c, 0) >= 2:
+                        continue
+                    cluster_counts[c] = cluster_counts.get(c, 0) + 1
+                    deduped.append(p)
+                posts = deduped
+            result[cat] = posts[:limit_per_category * 3]
     return result
 
 

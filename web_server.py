@@ -13,7 +13,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI News Monitor")
+app = FastAPI(title="YunFlow")
 
 _CACHE_TTL = 30 * 60  # 30 minutes
 _briefing_cache: dict = {}   # keyed by lang
@@ -188,7 +188,7 @@ def daily_briefing(lang: str = "zh"):
     if _briefing_cache.get(lang) is not None and time.time() - _briefing_cache_at.get(lang, 0) < _CACHE_TTL:
         return _briefing_cache[lang]
     import ai_processor
-    posts_by_cat = storage.get_recent_posts_by_category(hours=24, limit_per_category=10)
+    posts_by_cat = storage.get_recent_posts_by_category(hours=24, limit_per_category=30)
     result = ai_processor.generate_daily_briefing(posts_by_cat, lang=lang)
     if result.get("sections"):
         _briefing_cache[lang] = result
@@ -215,7 +215,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>News Monitor</title>
+<title>YunFlow</title>
 <style>
   /* ── Tokens ── */
   :root {
@@ -249,6 +249,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif; font-size: 14px; line-height: 1.5; }
 
   /* ── Layout ── */
@@ -306,16 +307,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   @media (max-width: 719px)  { .briefing-grid { grid-template-columns: 1fr; } }
 
   .b-section { background: var(--surface2); border-radius: 8px; padding: 12px 13px; border: 1px solid var(--border); }
-  .b-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 9px; }
+  .b-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 9px; }
   .b-list { list-style: none; }
-  .b-list li { font-size: 12px; color: var(--text2); line-height: 1.5; padding: 4px 0 4px 14px; position: relative; border-bottom: 1px solid var(--border); }
+  .b-list li { font-size: 14px; color: var(--text2); line-height: 1.5; padding: 4px 0 4px 14px; position: relative; border-bottom: 1px solid var(--border); }
+  .b-list li a { color: inherit; text-decoration: none; }
+  .b-list li a:hover { color: var(--accent); text-decoration: underline; }
   .b-list li:last-child { border-bottom: none; padding-bottom: 0; }
-  .b-list li::before { content: "·"; position: absolute; left: 3px; color: var(--accent); font-weight: 900; font-size: 14px; line-height: 1.4; }
-  .panel-loading { font-size: 12px; color: var(--muted); padding: 4px 0; }
+  .b-list li::before { content: "·"; position: absolute; left: 3px; color: var(--accent); font-weight: 900; font-size: 17px; line-height: 1.4; }
+  .panel-loading { font-size: 14px; color: var(--muted); padding: 4px 0; }
 
   /* ── Digest ── */
   .digest-panel { background: var(--accent-bg); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; margin-bottom: 14px; }
-  .digest-text { font-size: 13px; color: var(--text2); line-height: 1.75; }
+  .digest-text { font-size: 16px; color: var(--text2); line-height: 1.75; }
+  .digest-text a { color: inherit; text-decoration: none; }
+  .digest-text a:hover { color: var(--accent); text-decoration: underline; }
 
   /* ── Cards ── */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; box-shadow: var(--shadow); transition: border-color .15s, box-shadow .15s; }
@@ -324,7 +329,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   @keyframes slideIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
 
   .card-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
-  .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+  .tag { font-size: 13px; font-weight: 600; padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
   .tag-post  { background: var(--accent-bg); color: var(--accent); }
   .tag-tweet { background: var(--tweet-bg); color: var(--tweet); }
   .tag-t1    { background: var(--green-bg); color: var(--green); }
@@ -337,52 +342,52 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   [data-theme="dark"] .tag-paper-uv    { background: #3a2e0a; color: #fbbf24; }
   [data-theme="dark"] .tag-paper-arxiv { background: #2a1f4a; color: #c4b5fd; }
   [data-theme="dark"] .tag-paper-co    { background: #3a1228; color: #f9a8d4; }
-  .card-paper-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .card-paper-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 14px; color: var(--muted); margin-top: 8px; }
   .card-paper-footer .authors { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card-paper-footer .pdf-link { color: var(--accent); text-decoration: none; font-weight: 500; }
   .card-paper-footer .pdf-link:hover { text-decoration: underline; }
-  .card-date { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .card-date { font-size: 13px; color: var(--muted); margin-left: auto; }
 
-  .card-title { font-size: 15px; font-weight: 600; line-height: 1.4; color: var(--text); margin-bottom: 4px; }
+  .card-title { font-size: 18px; font-weight: 600; line-height: 1.4; color: var(--text); margin-bottom: 4px; }
   .card-title a { color: inherit; text-decoration: none; }
   .card-title a:hover { color: var(--accent); }
-  .card-title-zh { font-size: 13px; color: var(--text2); margin-bottom: 8px; font-weight: 400; }
+  .card-title-zh { font-size: 16px; color: var(--text2); margin-bottom: 8px; font-weight: 400; }
 
-  .card-summary-zh { font-size: 13px; color: var(--text2); line-height: 1.6; margin-bottom: 4px; }
-  .card-summary-en { font-size: 12px; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 10px; }
+  .card-summary-zh { font-size: 16px; color: var(--text2); line-height: 1.6; margin-bottom: 4px; }
+  .card-summary-en { font-size: 14px; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 10px; }
 
   .card-footer { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
-  .card-link { font-size: 12px; color: var(--accent); text-decoration: none; font-weight: 500; }
+  .card-link { font-size: 14px; color: var(--accent); text-decoration: none; font-weight: 500; }
   .card-link:hover { text-decoration: underline; }
-  .card-eng { font-size: 12px; color: var(--muted); margin-left: auto; }
+  .card-eng { font-size: 14px; color: var(--muted); margin-left: auto; }
 
-  .tweet-text { font-size: 14px; color: var(--text); line-height: 1.6; margin-bottom: 2px; }
-  .tweet-text-zh { font-size: 13px; color: var(--text2); line-height: 1.6; margin-top: 4px; margin-bottom: 4px; }
+  .tweet-text { font-size: 17px; color: var(--text); line-height: 1.6; margin-bottom: 2px; }
+  .tweet-text-zh { font-size: 16px; color: var(--text2); line-height: 1.6; margin-top: 4px; margin-bottom: 4px; }
 
   .empty { text-align: center; padding: 50px 20px; color: var(--muted); }
-  .empty-icon { font-size: 36px; margin-bottom: 10px; }
-  .loading-text { text-align: center; padding: 20px; color: var(--muted); font-size: 13px; }
+  .empty-icon { font-size: 43px; margin-bottom: 10px; }
+  .loading-text { text-align: center; padding: 20px; color: var(--muted); font-size: 16px; }
 
   /* ── Podcast panel ── */
   .podcast-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-bottom: 14px; box-shadow: var(--shadow); }
   .podcast-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
-  .podcast-icon { font-size: 36px; flex-shrink: 0; }
+  .podcast-icon { font-size: 43px; flex-shrink: 0; }
   .podcast-info { flex: 1; min-width: 0; }
-  .podcast-name { font-size: 17px; font-weight: 700; color: var(--text); margin-bottom: 5px; }
+  .podcast-name { font-size: 20px; font-weight: 700; color: var(--text); margin-bottom: 5px; }
   .podcast-links { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .pod-link { font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 5px; text-decoration: none; border: 1px solid var(--border); color: var(--text2); transition: border-color .12s, color .12s, background .12s; display: inline-flex; align-items: center; gap: 4px; }
+  .pod-link { font-size: 14px; font-weight: 500; padding: 3px 10px; border-radius: 5px; text-decoration: none; border: 1px solid var(--border); color: var(--text2); transition: border-color .12s, color .12s, background .12s; display: inline-flex; align-items: center; gap: 4px; }
   .pod-link:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
   .pod-link.alert-badge { border-color: #7c3aed44; color: #7c3aed; background: #f5f3ff; }
   [data-theme="dark"] .pod-link.alert-badge { color: #a78bfa; background: #2d1b69; border-color: #7c3aed66; }
   .podcast-episodes { border-top: 1px solid var(--border); padding-top: 12px; }
-  .ep-label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
+  .ep-label { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 8px; }
   .ep-item { padding: 8px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: baseline; }
   .ep-item:last-child { border-bottom: none; padding-bottom: 0; }
-  .ep-date { font-size: 11px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
-  .ep-title { font-size: 13px; color: var(--text); line-height: 1.4; }
+  .ep-date { font-size: 13px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+  .ep-title { font-size: 16px; color: var(--text); line-height: 1.4; }
   .ep-title a { color: inherit; text-decoration: none; }
   .ep-title a:hover { color: var(--accent); text-decoration: underline; }
-  .ep-empty { font-size: 12px; color: var(--muted); font-style: italic; }
+  .ep-empty { font-size: 14px; color: var(--muted); font-style: italic; }
 
   /* ── Mobile ── */
   .hamburger-btn { display: none; background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 18px; width: 36px; height: 36px; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
@@ -400,7 +405,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .topbar { padding: 10px 12px; }
     .feed { padding: 10px 12px; padding-bottom: 70px; }
     .card { padding: 12px 14px; }
-    .card-title { font-size: 14px; }
+    .card-title { font-size: 17px; }
     .briefing-panel, .digest-panel { padding: 12px 14px; }
     .bottom-nav { display: flex; position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--border); z-index: 100; padding-bottom: env(safe-area-inset-bottom); }
   }
@@ -418,7 +423,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-logo">
-      <h1><span class="status-dot" id="statusDot"></span>News Monitor</h1>
+      <h1><span class="status-dot" id="statusDot"></span>YunFlow</h1>
       <div style="display:flex;gap:5px;align-items:center">
         <button class="theme-btn" id="langBtn" onclick="toggleLang()" title="切换语言">EN</button>
         <button class="theme-btn" id="themeBtn" onclick="toggleTheme()">☀</button>
@@ -428,12 +433,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <button class="nav-btn active" onclick="setFilter('all',this)"><span data-i18n="navAll">🌐 全部</span><span class="cnt" id="cnt-all">0</span></button>
 
     <div class="nav-section" data-i18n="secCategories" style="margin-top:6px;">分类</div>
+    <button class="nav-btn" onclick="setCategory('polymarket',this)"><span data-i18n="navPolymarket">🎯 Polymarket</span><span class="cnt" id="cnt-polymarket">0</span></button>
+    <button class="nav-btn" onclick="setCategory('us_stock',this)"><span data-i18n="navStocks">📈 美股</span><span class="cnt" id="cnt-us_stock">0</span></button>
     <button class="nav-btn" onclick="setCategory('ai',this)"><span data-i18n="navAI">🤖 AI</span><span class="cnt" id="cnt-ai">0</span></button>
     <button class="nav-btn" onclick="setCategory('papers',this)"><span data-i18n="navPapers">📄 论文</span><span class="cnt" id="cnt-papers">0</span></button>
     <button class="nav-btn" onclick="setCategory('web3',this)"><span data-i18n="navWeb3">🔗 Web3</span><span class="cnt" id="cnt-web3">0</span></button>
     <button class="nav-btn" onclick="setCategory('venture',this)"><span data-i18n="navVenture">💼 创投</span><span class="cnt" id="cnt-venture">0</span></button>
-    <button class="nav-btn" onclick="setCategory('us_stock',this)"><span data-i18n="navStocks">📈 美股</span><span class="cnt" id="cnt-us_stock">0</span></button>
-    <button class="nav-btn" onclick="setCategory('polymarket',this)"><span data-i18n="navPolymarket">🎯 Polymarket</span><span class="cnt" id="cnt-polymarket">0</span></button>
 
     <div class="nav-section" data-i18n="secFilter" style="margin-top:6px;">筛选</div>
     <button class="nav-btn" onclick="setFilter('posts',this)"><span data-i18n="navPosts">📰 博客文章</span><span class="cnt" id="cnt-posts">0</span></button>
@@ -498,12 +503,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <nav class="bottom-nav" id="bottomNav">
   <button class="bnav-btn" onclick="setFilter('all',null);bnav(this)"><span>🌐</span><label data-i18n="bnavAll">全部</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('polymarket',this)"><span>🎯</span><label data-i18n="bnavPolymarket">预测</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('us_stock',this)"><span>📈</span><label data-i18n="bnavStocks">美股</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('ai',this)"><span>🤖</span><label>AI</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('papers',this)"><span>📄</span><label data-i18n="bnavPapers">论文</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('web3',this)"><span>🔗</span><label>Web3</label></button>
-  <button class="bnav-btn" onclick="setCategoryMobile('venture',this)"><span>💼</span><label data-i18n="bnavVenture">创投</label></button>
-  <button class="bnav-btn" onclick="setCategoryMobile('us_stock',this)"><span>📈</span><label data-i18n="bnavStocks">美股</label></button>
-  <button class="bnav-btn" onclick="setCategoryMobile('polymarket',this)"><span>🎯</span><label data-i18n="bnavPolymarket">预测</label></button>
   <button class="bnav-btn" onclick="toggleSidebar()"><span>☰</span><label data-i18n="bnavMore">更多</label></button>
 </nav>
 
@@ -960,7 +964,20 @@ async function loadBriefing() {
       title.textContent = (s.icon||'') + ' ' + (s.label||s.category);
       sec.appendChild(title);
       const ul = document.createElement('ul'); ul.className = 'b-list';
-      (s.points||[]).forEach(p => { const li = document.createElement('li'); li.textContent = p; ul.appendChild(li); });
+      (s.points||[]).forEach(p => {
+        const li = document.createElement('li');
+        const text = (typeof p === 'object') ? (p.text||'') : p;
+        const url  = (typeof p === 'object') ? (p.url||'')  : '';
+        if (url) {
+          const a = document.createElement('a');
+          a.href = url; a.target = '_blank'; a.rel = 'noopener';
+          a.textContent = text;
+          li.appendChild(a);
+        } else {
+          li.textContent = text;
+        }
+        ul.appendChild(li);
+      });
       sec.appendChild(ul); grid.appendChild(sec);
     });
     body.textContent = '';
@@ -984,7 +1001,16 @@ async function loadDigest() {
     bullets.forEach(b => {
       const li = document.createElement('li');
       li.style.margin = '6px 0'; li.style.lineHeight = '1.6';
-      li.textContent = b;
+      const text = (typeof b === 'object') ? (b.text||'') : b;
+      const url  = (typeof b === 'object') ? (b.url||'')  : '';
+      if (url) {
+        const a = document.createElement('a');
+        a.href = url; a.target = '_blank'; a.rel = 'noopener';
+        a.textContent = text;
+        li.appendChild(a);
+      } else {
+        li.textContent = text;
+      }
       ul.appendChild(li);
     });
     el.appendChild(ul);

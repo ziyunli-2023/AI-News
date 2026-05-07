@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Send digest at these hours (local time) → window covers since previous send
 SEND_HOURS = {7, 12, 20}
 SEND_WINDOWS = {7: 11, 12: 5, 20: 8}   # hour → look-back hours
-SEND_LABELS  = {7: "Morning", 12: "Midday", 20: "Evening"}
+SEND_LABELS  = {7: "早报", 12: "午报", 20: "晚报"}
 
 
 def _ensure_translations(posts: list[dict], tweets: list[dict]):
@@ -290,7 +290,7 @@ class EmailNotifier:
         # ── Ensure bilingual: fill any missing _zh translations on demand ──
         _ensure_translations(all_posts + trending_papers, [])
 
-        subject = f"🤖 AI News {label} — {len(batch)} item(s) · {now_str}"
+        subject = f"看牛韵新闻，抓财富风云 · {label} · {now_str}"
 
         # ── AI digest summary ──────────────────────────────────────────────
         digest_summary = ai_processor.generate_digest_summary(batch)
@@ -302,8 +302,8 @@ class EmailNotifier:
 """]
         html_parts.append(f"""
   <div style='background:#0f3460;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0;'>
-    <h1 style='margin:0;font-size:20px;'>🤖 AI News {label}</h1>
-    <p style='margin:4px 0 0;font-size:13px;opacity:.8;'>{now_str} &nbsp;·&nbsp; {len(batch)} new item(s)</p>
+    <h1 style='margin:0;font-size:20px;'>看牛韵新闻，抓财富风云 · {label}</h1>
+    <p style='margin:4px 0 0;font-size:13px;opacity:.8;'>{now_str} &nbsp;·&nbsp; {len(batch)} 条资讯</p>
   </div>
   <div style='background:#f4f6fb;padding:16px 24px;border-radius:0 0 10px 10px;margin-bottom:24px;'>
     <span style='font-size:13px;color:#555;'>🎙 {len(podcasts)} 播客 &nbsp;&nbsp; 📰 {len(posts)} blog posts &nbsp;&nbsp; 📄 {len(trending_papers)} 热门论文 &nbsp;&nbsp; 🎯 {len(polymarket_top)} 预测市场</span>
@@ -311,10 +311,13 @@ class EmailNotifier:
 """)
         # Digest summary block — bullet points, one per line
         if digest_summary:
-            bullets_html = "".join(
-                f"<li style='margin:6px 0;font-size:14px;color:#333;line-height:1.6;'>{b}</li>"
-                for b in digest_summary
-            )
+            def _digest_li(b) -> str:
+                text = b.get("text", b) if isinstance(b, dict) else b
+                url  = b.get("url", "") if isinstance(b, dict) else ""
+                inner = (f"<a href='{url}' style='color:#b45309;text-decoration:none;' "
+                         f"target='_blank'>{text}</a>") if url else text
+                return f"<li style='margin:6px 0;font-size:14px;color:#333;line-height:1.6;'>{inner}</li>"
+            bullets_html = "".join(_digest_li(b) for b in digest_summary)
             html_parts.append(f"""
   <div style='background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;
               padding:16px 20px;margin-bottom:24px;'>
@@ -337,10 +340,13 @@ class EmailNotifier:
                     continue
                 icon  = sec.get("icon")  or "📌"
                 title = sec.get("label") or sec.get("category") or ""
-                points_html = "".join(
-                    f"<li style='margin:4px 0;font-size:13px;color:#1f2937;line-height:1.55;'>{p}</li>"
-                    for p in points
-                )
+                def _pt_html(p) -> str:
+                    text = p.get("text", p) if isinstance(p, dict) else p
+                    url  = p.get("url", "") if isinstance(p, dict) else ""
+                    inner = (f"<a href='{url}' style='color:#1e40af;text-decoration:none;' "
+                             f"target='_blank'>{text}</a>") if url else text
+                    return f"<li style='margin:4px 0;font-size:13px;color:#1f2937;line-height:1.55;'>{inner}</li>"
+                points_html = "".join(_pt_html(p) for p in points)
                 html_parts.append(f"""
     <div style='margin-bottom:14px;'>
       <div style='font-size:13px;font-weight:600;color:#1e3a8a;margin-bottom:4px;'>{icon} {title}</div>
@@ -526,11 +532,11 @@ class EmailNotifier:
                 by_cat[cat].append(b)
 
             CATEGORY_ORDER = [
+                ("polymarket",  "🎯", "预测市场"),
+                ("us_stock",    "🇺🇸", "美股"),
                 ("ai",          "🤖", "AI 前沿"),
                 ("web3",        "⛓️", "Web3"),
                 ("venture",     "💰", "创投圈"),
-                ("us_stock",    "🇺🇸", "美股"),
-                ("polymarket",  "🎯", "预测市场"),
             ]
             seen_cats = {c for c, _, _ in CATEGORY_ORDER}
             extras = [(c, "📌", c) for c in by_cat.keys() if c not in seen_cats]
@@ -569,7 +575,7 @@ class EmailNotifier:
         html_parts.append("""
   <div style='margin-top:32px;padding-top:16px;border-top:1px solid #eee;
               font-size:11px;color:#aaa;text-align:center;'>
-    AI News Monitor · Sent automatically
+    YunFlow · Sent automatically
   </div>
 </body></html>""")
         html_body = "".join(html_parts)

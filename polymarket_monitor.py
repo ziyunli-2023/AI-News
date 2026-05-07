@@ -69,11 +69,92 @@ def _market_url(market: dict) -> str:
     return _MARKET_BASE + slug if slug else "https://polymarket.com"
 
 
+# Topics recognizable to both Eastern and Western audiences.
+# Higher score = higher priority when sorting for display/briefing.
+_GLOBAL_TOPICS = [
+    # Geopolitics & world leaders
+    (10, ["trump", "biden", "xi jinping", "putin", "zelensky", "ukraine", "russia", "china",
+          "taiwan", "north korea", "iran", "israel", "gaza", "middle east", "nato",
+          "war", "ceasefire", "sanctions", "nuclear"]),
+    # Global economy & markets — use word-boundary-safe tokens
+    (8,  ["federal reserve", "interest rate", "rate cut", "recession", "inflation",
+          "gdp", "tariff", "trade war", "imf", "world bank", "oil price", " gold ",
+          "the fed ", "fed rate", "fomc"]),
+    # AI & big tech (global)
+    (8,  ["openai", "chatgpt", "gpt-", "anthropic", "gemini", "artificial intelligence",
+          "nvidia", "apple inc", "microsoft", "google", "meta ai", "amazon", "tesla",
+          "spacex", "elon musk", "sam altman"]),
+    # Crypto (globally followed)
+    (7,  ["bitcoin", "btc", "ethereum", "crypto", "coinbase", "binance"]),
+    # Major global elections — only known major countries/leaders
+    (6,  ["us election", "presidential election 2028", "presidential race",
+          "uk election", "french election", "german election",
+          "modi", "macron", "scholz", "starmer"]),
+    # Other truly global events
+    (4,  ["world cup", "olympics", "nobel prize", "g7", "g20", "un summit"]),
+]
+
+_NICHE_PENALTY = [
+    "nba", "nfl", "mlb", "nhl", "super bowl", "oscars", "grammy", "emmy",
+    "box office", "rapper", "celebrity", "kardashian", "bachelor",
+    "governor", "senate", "congress", "house rep",   # US domestic politics
+]
+
+# Topics to block entirely — never show regardless of score
+_BLOCKED_TOPICS = [
+    "china invade taiwan", "invade taiwan", "taiwan invasion",
+    "xi jinping", "ccp", "chinese communist", "china's president",
+    "china president", "china attack", "pla ", "people's liberation",
+    "hong kong", "tiananmen", "xinjiang", "tibet",
+]
+
+_TOPIC_CLUSTERS = [
+    ("iran",         ["iran"]),
+    ("ukraine",      ["ukraine", "zelensky"]),
+    ("russia",       ["russia", "putin"]),
+    ("china_taiwan", ["taiwan", "xi jinping"]),
+    ("trump",        ["trump"]),
+    ("bitcoin",      ["bitcoin", "btc"]),
+    ("ethereum",     ["ethereum", " eth "]),
+    ("fed",          ["federal reserve", " fed ", "rate cut", "interest rate"]),
+    ("north_korea",  ["north korea"]),
+    ("israel_gaza",  ["israel", "gaza"]),
+]
+
+
+def _topic_cluster(q: str) -> str:
+    ql = q.lower()
+    for cluster, keywords in _TOPIC_CLUSTERS:
+        if any(k in ql for k in keywords):
+            return cluster
+    return q[:30]
+
+
+def _global_score(question: str, volume24hr) -> float:
+    q = question.lower()
+    score = 0.0
+    for pts, keywords in _GLOBAL_TOPICS:
+        if any(k in q for k in keywords):
+            score += pts
+    for k in _NICHE_PENALTY:
+        if k in q:
+            score -= 6
+    # Volume bonus: log scale so a $1M market beats a $10K one but not 10x
+    try:
+        import math
+        v = float(volume24hr or 0)
+        if v > 0:
+            score += math.log10(v) * 0.5
+    except Exception:
+        pass
+    return score
+
+
 def _fetch_markets() -> list[dict]:
     params = {
         "active": "true",
         "closed": "false",
-        "limit": 30,
+        "limit": 50,
         "order": "volume24hr",
         "ascending": "false",
     }
@@ -91,11 +172,30 @@ def _fetch_markets() -> list[dict]:
         logger.warning("Polymarket fetch failed: %s", e)
         return []
 
-    posts = []
+    raw = []
     for m in (data if isinstance(data, list) else data.get("markets", [])):
         question = (m.get("question") or "").strip()
         if not question:
             continue
+        ql = question.lower()
+        if any(b in ql for b in _BLOCKED_TOPICS):
+            continue
+        score = _global_score(question, m.get("volume24hr") or m.get("volume", 0))
+        raw.append((score, m, question))
+
+    # Sort by global relevance score descending
+    raw.sort(key=lambda x: x[0], reverse=True)
+
+    # Topic deduplication: max 2 per cluster so one hot topic doesn't dominate
+    cluster_counts: dict[str, int] = {}
+    posts = []
+    for score, m, question in raw:
+        if score <= 0:
+            continue  # skip niche/unrecognized topics entirely
+        cluster = _topic_cluster(question)
+        if cluster_counts.get(cluster, 0) >= 2:
+            continue
+        cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1
         posts.append({
             "id": _market_id(m),
             "source": "Polymarket",

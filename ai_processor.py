@@ -140,25 +140,25 @@ def generate_daily_briefing(posts_by_category: dict, lang: str = "zh") -> dict:
 
     CATEGORY_META = {
         "zh": {
+            "polymarket":  {"label": "预测市场", "icon": "🎯"},
+            "us_stock":    {"label": "美股",     "icon": "🇺🇸"},
             "ai":          {"label": "AI 前沿",  "icon": "🤖"},
             "papers":      {"label": "AI 论文",  "icon": "📄"},
             "web3":        {"label": "Web3",     "icon": "⛓️"},
             "venture":     {"label": "创投圈",   "icon": "💰"},
-            "us_stock":    {"label": "美股",     "icon": "🇺🇸"},
-            "polymarket":  {"label": "预测市场", "icon": "🎯"},
         },
         "en": {
+            "polymarket":  {"label": "Prediction Markets","icon": "🎯"},
+            "us_stock":    {"label": "US Stocks",        "icon": "🇺🇸"},
             "ai":          {"label": "AI",               "icon": "🤖"},
             "papers":      {"label": "Papers",           "icon": "📄"},
             "web3":        {"label": "Web3",             "icon": "⛓️"},
             "venture":     {"label": "Venture",          "icon": "💰"},
-            "us_stock":    {"label": "US Stocks",        "icon": "🇺🇸"},
-            "polymarket":  {"label": "Prediction Markets","icon": "🎯"},
         },
     }
     meta_map = CATEGORY_META.get(lang, CATEGORY_META["zh"])
 
-    # Build news text per category
+    # Build news text per category — pass all candidates, let AI pick the best
     sections_input = []
     for cat, meta in meta_map.items():
         posts = posts_by_category.get(cat, [])
@@ -167,64 +167,74 @@ def generate_daily_briefing(posts_by_category: dict, lang: str = "zh") -> dict:
             sections_input.append(f"[{meta['label']}] {no_data}")
             continue
         lines = [f"[{meta['label']}]"]
-        for p in posts[:8]:
+        for i, p in enumerate(posts):
             if cat == "polymarket":
-                # Summary contains probability + volume — include it so AI can generate useful bullets
-                summary = (p.get("summary") or "").split(" | Ends")[0]  # drop deadline noise
-                lines.append(f"- {p.get('title', '')} ({summary})")
+                summary = (p.get("summary") or "").split(" | Ends")[0]
+                lines.append(f"{i+1}. {p.get('title', '')} ({summary})")
             else:
                 title = p.get("title") if lang == "en" else (p.get("title_zh") or p.get("title", ""))
-                lines.append(f"- {title}")
+                source = p.get("source", "")
+                lines.append(f"{i+1}. [{source}] {title}")
         sections_input.append("\n".join(lines))
 
     news_text = "\n\n".join(sections_input)
 
+    # Build a flat url_map: cat -> {1-based index -> url}
+    url_map: dict[str, dict[int, str]] = {}
+    for cat, posts in posts_by_category.items():
+        url_map[cat] = {i + 1: p.get("url", "") for i, p in enumerate(posts)}
+
     if lang == "en":
-        prompt = f"""The following are today's latest news headlines by category:
+        prompt = f"""The following are today's news candidates by category (more than needed — you must select the most important ones):
 
 {news_text}
 
-Generate 3-4 bullet points for each category. Requirements:
-- Each bullet under 20 words, concise and direct
-- Highlight specific events, numbers, and names
-- For categories with no data, output "No major updates"
+Your task: For each category, SELECT the 4-5 most newsworthy items and write a punchy bullet for each.
+Selection criteria: global impact, specific numbers/names, market-moving events, breakthroughs — NOT routine updates or minor news.
+Requirements:
+- Each bullet under 20 words, direct and specific
+- Must reference the actual event, company, or number — no vague summaries
+- For categories with no data, use src 0 and text "No major updates"
 - Return strictly in this JSON format, no extra content:
 
 {{"sections": [
-  {{"category": "ai",          "points": ["...", "...", "..."]}},
-  {{"category": "papers",      "points": ["...", "...", "..."]}},
-  {{"category": "web3",        "points": ["...", "...", "..."]}},
-  {{"category": "venture",     "points": ["...", "...", "..."]}},
-  {{"category": "us_stock",    "points": ["...", "...", "..."]}},
-  {{"category": "polymarket",  "points": ["...", "...", "..."]}}
+  {{"category": "polymarket",  "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 3}}]}},
+  {{"category": "us_stock",    "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 4}}]}},
+  {{"category": "ai",          "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 5}}]}},
+  {{"category": "papers",      "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 3}}]}},
+  {{"category": "web3",        "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 4}}]}},
+  {{"category": "venture",     "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 6}}]}}
 ]}}"""
     else:
-        prompt = f"""以下是今日各板块的最新资讯标题：
+        prompt = f"""以下是今日各板块的候选资讯（数量超出需要，你需要主动挑选最重要的）：
 
 {news_text}
 
-请为每个板块生成 3~4 条要点，要求：
-- 每条要点 30 字以内，简洁直接
-- 重点突出具体事件、数字、名称
-- 预测市场板块：重点体现市场预测概率和成交量，例如"美伊达成永久和平协议概率 16%，24h成交量 240万美元"
-- 没有数据的板块输出"暂无重要动态"
+你的任务：每个板块从候选项中挑出 4~5 条最值得关注的，写成简洁有力的速报要点。
+挑选标准：全球影响力、具体数字/事件/人名、市场震动、重大突破——日常更新、常规动态不选。
+写作要求：
+- 每条 35 字以内，直接点名事件、数字、公司
+- 预测市场：必须给出概率和成交量，用"市场押注"、"赔率显示"等措辞，体现分歧与戏剧性
+- 美股/创投：突出涨跌幅、融资金额、具体公司名
+- AI：突出产品发布、能力突破、重大合作
+- 没有数据的板块用 src 0，text 填"暂无重要动态"
 - 严格按以下 JSON 格式返回，不要添加其他内容：
 
 {{"sections": [
-  {{"category": "ai",          "points": ["...", "...", "..."]}},
-  {{"category": "papers",      "points": ["...", "...", "..."]}},
-  {{"category": "web3",        "points": ["...", "...", "..."]}},
-  {{"category": "venture",     "points": ["...", "...", "..."]}},
-  {{"category": "us_stock",    "points": ["...", "...", "..."]}},
-  {{"category": "polymarket",  "points": ["...", "...", "..."]}}
+  {{"category": "polymarket",  "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 3}}]}},
+  {{"category": "us_stock",    "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 4}}]}},
+  {{"category": "ai",          "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 5}}]}},
+  {{"category": "papers",      "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 3}}]}},
+  {{"category": "web3",        "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 4}}]}},
+  {{"category": "venture",     "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 6}}]}}
 ]}}"""
 
     try:
         resp = _get_client().chat.completions.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000,
-            temperature=0.4,
+            max_tokens=1500,
+            temperature=0.6,
         )
         raw = resp.choices[0].message.content.strip()
         start = raw.find("{")
@@ -232,11 +242,21 @@ Generate 3-4 bullet points for each category. Requirements:
         if start == -1 or end == -1:
             raise ValueError("No JSON object in response")
         data = json.loads(raw[start:end + 1])
-        # Attach label/icon metadata
+        # Attach label/icon metadata and resolve src index -> url
         for sec in data.get("sections", []):
-            meta = meta_map.get(sec["category"], {})
-            sec["label"] = meta.get("label", sec["category"])
+            cat = sec.get("category", "")
+            meta = meta_map.get(cat, {})
+            sec["label"] = meta.get("label", cat)
             sec["icon"] = meta.get("icon", "📌")
+            cat_urls = url_map.get(cat, {})
+            resolved = []
+            for pt in sec.get("points", []):
+                if isinstance(pt, dict):
+                    url = cat_urls.get(int(pt.get("src") or 0), "") or ""
+                    resolved.append({"text": pt.get("text", ""), "url": url})
+                else:
+                    resolved.append({"text": str(pt), "url": ""})
+            sec["points"] = resolved
         return data
     except Exception as e:
         logger.error("generate_daily_briefing failed: %s", e)
@@ -252,36 +272,35 @@ def generate_digest_summary(items: list[dict], lang: str = "zh") -> list[str]:
     if not config.DEEPSEEK_API_KEY or not items:
         return []
 
+    candidates = items[:30]
+    url_index: dict[int, str] = {}
     lines = []
-    for item in items[:30]:
+    for i, item in enumerate(candidates):
         d = item.get("item") or item.get("data") or item
+        url_index[i + 1] = d.get("url", "")
         if item.get("type") == "tweet":
-            lines.append(f"- [Tweet @{d.get('username','')}] {d.get('text','')[:100]}")
+            lines.append(f"{i+1}. [Tweet @{d.get('username','')}] {d.get('text','')[:100]}")
         else:
-            lines.append(f"- [{d.get('source','')}] {d.get('title','')}")
+            lines.append(f"{i+1}. [{d.get('source','')}] {d.get('title','')}")
     news_list = "\n".join(lines)
 
     if lang == "en":
-        prompt = f"""The following is today's AI news list:
+        prompt = f"""The following is today's news list (numbered):
 
 {news_list}
 
-Extract 3-6 key highlights in English, one per line. Requirements:
-- Each point under 20 words
-- Focus on specific developments/topics, avoid generalizations
-- Return strictly as a JSON array, no extra text:
-["highlight1", "highlight2", "highlight3"]"""
+Extract 3-6 key highlights. Requirements:
+- Each point under 20 words, specific and direct
+- Return strictly as a JSON array with text and source index, no extra text:
+[{{"text": "highlight1", "src": 2}}, {{"text": "highlight2", "src": 5}}]"""
     else:
-        prompt = f"""以下是今天的AI资讯列表：
+        prompt = f"""以下是今天的资讯列表（已编号）：
 
 {news_list}
 
-请用简体中文提炼出 3-6 个最重要的看点，每个看点一行，独立成条，语言简洁专业。
-要求：
-- 每条 30 字以内
-- 每条聚焦一个具体进展/话题，不要泛泛而谈
-- 严格按以下 JSON 数组格式返回，不要任何额外文字：
-["看点1", "看点2", "看点3"]"""
+请提炼出 3~6 个最重要的看点，每条 30 字以内，聚焦具体事件，不要泛泛而谈。
+严格按以下 JSON 数组格式返回，不要任何额外文字：
+[{{"text": "看点1", "src": 2}}, {{"text": "看点2", "src": 5}}]"""
 
     try:
         resp = _get_client().chat.completions.create(
@@ -295,8 +314,18 @@ Extract 3-6 key highlights in English, one per line. Requirements:
         end = raw.rfind("]")
         if start == -1 or end == -1:
             raise ValueError("No JSON array in response")
-        bullets = json.loads(raw[start:end + 1])
-        return [str(b).strip() for b in bullets if str(b).strip()]
+        parsed = json.loads(raw[start:end + 1])
+        result = []
+        for b in parsed:
+            if isinstance(b, dict):
+                text = str(b.get("text", "")).strip()
+                url = url_index.get(int(b.get("src") or 0), "") or ""
+            else:
+                text = str(b).strip()
+                url = ""
+            if text:
+                result.append({"text": text, "url": url})
+        return result
     except Exception as e:
         logger.error("generate_digest_summary failed: %s", e)
         return []
