@@ -9,7 +9,7 @@ AI News Monitor collects updates from leading AI researchers, labs, founders, an
 - **RSS Monitor** — OpenAI, Anthropic, DeepMind, arXiv and 22 more, tiered polling
 - **AI Translation** — DeepSeek API auto-translates English titles/summaries to Chinese *(optional)*
 - **Email Digest** — Gmail notifications when new content arrives *(optional)*
-- **Web Dashboard** — Browse all news at `http://localhost:8000`
+- **Web Dashboard** — Browse all news at `http://localhost:8080`
 - **MCP Server** — Claude Code can query the database directly via MCP tools
 
 ---
@@ -44,7 +44,7 @@ USE_LETSENCRYPT=true DOMAIN=your-domain.com SSL_EMAIL=you@email.com ./scripts/se
 **1. Clone & install dependencies**
 
 ```bash
-git clone https://github.com/ziyunli-2023/AI-News.git
+git clone https://github.com/your-username/AI-News.git
 cd AI-News
 pip install -r requirements.txt uvicorn
 ```
@@ -91,7 +91,7 @@ WEB_PORT=8000
 python main.py
 ```
 
-Open web dashboard: `http://localhost:8000`
+Open web dashboard: `http://localhost:8080`
 
 ---
 
@@ -152,202 +152,6 @@ ps aux | grep main.py | grep -v grep
 ```
 
 If the output is empty, the process is not running. Restart it manually or via launchd (see below).
-
----
-
-## 7x24 Running and Auto-Start
-
-For long-running deployment, use the Docker stack. `docker-compose.yml` already sets `restart: unless-stopped`, and you can add a `systemd` unit so the stack starts automatically after boot.
-
-### Linux / WSL recommended setup
-
-```bash
-# 1. Prepare config
-cp .env.example .env
-
-# 2. Initial setup and first start
-./scripts/setup.sh
-
-# 3. Install systemd auto-start service
-./scripts/install-systemd-service.sh
-```
-
-Useful commands:
-
-```bash
-sudo systemctl status ai-news-docker
-sudo systemctl restart ai-news-docker
-sudo journalctl -u ai-news-docker -f
-docker compose ps
-docker compose logs -f
-```
-
-### WSL extra step
-
-If `systemctl` is unavailable in WSL, enable systemd first:
-
-```bash
-./scripts/enable-wsl-systemd.sh
-```
-
-Then run `wsl.exe --shutdown` in Windows PowerShell, reopen WSL, and rerun `./scripts/install-systemd-service.sh`.
-
-### Windows boot auto-start for WSL
-
-`systemd` only helps after the WSL distro has started. If you want the service to start automatically when Windows boots, add a Windows Scheduled Task that launches WSL and starts `ai-news-docker.service`.
-
-Current detected distro example:
-
-```powershell
-Ubuntu-22.04
-```
-
-Run this in **Windows PowerShell as Administrator**:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\liziy\Code\AI-News\scripts\windows\register-ai-news-startup-task.ps1 -DistroName "Ubuntu-22.04" -ProjectDir "C:\Users\liziy\Code\AI-News"
-```
-
-This creates a startup task named `AI-News-WSL-Autostart`. It runs:
-
-```powershell
-C:\Users\liziy\Code\AI-News\scripts\windows\start-ai-news-wsl.ps1
-```
-
-That script launches WSL as `root` and executes:
-
-```bash
-systemctl start ai-news-docker.service
-```
-
-Useful Windows-side commands:
-
-```powershell
-Start-ScheduledTask -TaskName "AI-News-WSL-Autostart"
-Get-ScheduledTask -TaskName "AI-News-WSL-Autostart"
-schtasks /Query /TN "AI-News-WSL-Autostart"
-```
-
-Useful WSL-side checks:
-
-```bash
-systemctl status ai-news-docker.service --no-pager
-docker compose ps
-```
-
----
-
-## Auto-start on macOS (launchd)
-
-The service is managed by macOS `launchd` and is configured to **start at login** and **restart automatically on crash**.
-
-### Plist location
-
-```
-~/Library/LaunchAgents/com.ziyun.news-monitor.plist
-```
-
-### Plist contents
-
-Adjust the Python path to match your environment (use `which python3` to find it). If using a Conda environment, point to the env's interpreter directly:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.ziyun.news-monitor</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <!-- Use your Conda env's python, or /usr/bin/python3 -->
-        <string>/Users/ziyun/opt/anaconda3/envs/cli-env/bin/python3</string>
-        <string>/Users/ziyun/Documents/Code/News/main.py</string>
-    </array>
-
-    <key>WorkingDirectory</key>
-    <string>/Users/ziyun/Documents/Code/News</string>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/Users/ziyun/opt/anaconda3/envs/cli-env/bin:/usr/local/bin:/usr/bin:/bin</string>
-    </dict>
-
-    <!-- Start at login -->
-    <key>RunAtLoad</key>
-    <true/>
-
-    <!-- Restart automatically if it crashes -->
-    <key>KeepAlive</key>
-    <true/>
-
-    <!-- Log output (launchd-managed runs) -->
-    <key>StandardOutPath</key>
-    <string>/Users/ziyun/Documents/Code/News/logs/stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/ziyun/Documents/Code/News/logs/stderr.log</string>
-</dict>
-</plist>
-```
-
-> **Note:** `WorkingDirectory` must be set correctly — the service reads `.env` and `news.db` relative to this path.
-
-### Managing the service
-
-```bash
-# Install / reload after editing the plist
-launchctl load ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
-
-# Check status
-# Output format: <PID>  <exit-code>  <label>
-# "-" in PID column = not running; exit code -9 = killed by OS
-launchctl list | grep news-monitor
-
-# Stop the service
-launchctl unload ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
-
-# Restart
-launchctl unload ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
-launchctl load ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
-```
-
-### Viewing logs
-
-| Log file | Written by |
-|---|---|
-| `logs/main.log` | Manual runs (`python main.py >> logs/main.log 2>&1 &`) |
-| `logs/stdout.log` | launchd-managed runs (stdout) |
-| `logs/stderr.log` | launchd-managed runs (stderr) |
-
-```bash
-# Follow logs in real time
-tail -f logs/main.log
-tail -f logs/stderr.log
-```
-
-### Troubleshooting: service exits silently after launchd start
-
-If `launchctl list | grep news-monitor` shows `- 0` (PID is `-`, exit code is `0`) right after loading, the process started and exited cleanly with no error. Common causes:
-
-- **Wrong Python path** — verify with `/path/to/python3 --version`
-- **Missing `.env`** — the service reads credentials from `.env` in the working directory; make sure it exists
-- **WorkingDirectory not set** — without it, relative paths like `news.db` and `.env` won't resolve
-
-As a fallback, start the service manually:
-
-```bash
-python main.py >> logs/main.log 2>&1 &
-```
-
-### Uninstall
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
-rm ~/Library/LaunchAgents/com.ziyun.news-monitor.plist
-```
 
 ---
 
