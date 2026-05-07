@@ -1,4 +1,4 @@
-# AI News Monitor
+# YunFlow - Your AI News Monitor
 
 > Track AI news from X and RSS in one lightweight, self-hosted monitor.
 
