@@ -22,6 +22,8 @@ RSS_POLL_INTERVALS = {1: 1800, 2: 3600, 3: 7200}
 # NOTE: X monitor requires Basic tier ($100/mo). Active accounts listed here
 # are ready to enable once API access is upgraded.
 TRACKED_X_USERS = [
+    # ── 特朗普 / Trump ──────────────────────────────────────────────────────
+    {"username": "realDonaldTrump", "priority": 1, "category": "trump"},   # Donald Trump
     # ── AI 圈 行业领袖 ──────────────────────────────────────────────────────
     {"username": "sama",           "priority": 1, "category": "founder"},     # Sam Altman
     {"username": "DarioAmodei",    "priority": 1, "category": "founder"},     # Dario Amodei
@@ -117,8 +119,26 @@ RSS_FEEDS = [
     {"name": "Sequoia Capital",    "url": "https://www.sequoiacap.com/feed/",                                                                  "tier": 1, "category": "venture"},
     {"name": "Lightspeed",         "url": "https://lsvp.com/feed/",                                                                           "tier": 2, "category": "venture"},
     {"name": "TechCrunch",         "url": "https://techcrunch.com/feed/",                                                                      "tier": 2, "category": "venture"},
+    {"name": "TechCrunch IPO",     "url": "https://techcrunch.com/tag/ipo/feed/",                                                              "tier": 1, "category": "venture"},
     {"name": "Crunchbase News",    "url": "https://news.crunchbase.com/feed/",                                                                 "tier": 2, "category": "venture"},
     {"name": "StrictlyVC",         "url": "https://strictlyvc.com/feed/",                                                                      "tier": 2, "category": "venture"},
+    {"name": "IPO Scoop",          "url": "https://www.iposcoop.com/feed/",                                                                    "tier": 1, "category": "venture"},
+    {"name": "IPO Watch",          "url": "https://news.google.com/rss/search?q=IPO+filing+technology&hl=en-US&gl=US&ceid=US:en",              "tier": 1, "category": "venture"},
+    {"name": "IPO Reuters",        "url": "https://news.google.com/rss/search?q=IPO+site:reuters.com&hl=en-US&gl=US&ceid=US:en",              "tier": 1, "category": "venture"},
+
+    # ── 地缘政治 / Geopolitics (Tier 1, poll every 30 min) ──────────────────
+    {"name": "Geo Middle East",   "url": "https://news.google.com/rss/search?q=Iran+OR+Israel+OR+Gaza+OR+%22Middle+East%22+war+OR+strike+OR+conflict&hl=en-US&gl=US&ceid=US:en",      "tier": 1, "category": "geopolitics"},
+    {"name": "Geo Russia Ukraine","url": "https://news.google.com/rss/search?q=Russia+Ukraine+war+OR+Zelensky+OR+Putin+ceasefire+OR+frontline&hl=en-US&gl=US&ceid=US:en",             "tier": 1, "category": "geopolitics"},
+    {"name": "Geo China Taiwan",  "url": "https://news.google.com/rss/search?q=China+Taiwan+OR+%22South+China+Sea%22+OR+%22PLA%22+military&hl=en-US&gl=US&ceid=US:en",               "tier": 1, "category": "geopolitics"},
+    {"name": "Geo North Korea",   "url": "https://news.google.com/rss/search?q=%22North+Korea%22+missile+OR+nuclear+OR+Kim+Jong&hl=en-US&gl=US&ceid=US:en",                           "tier": 1, "category": "geopolitics"},
+    {"name": "Geo Reuters",       "url": "https://news.google.com/rss/search?q=geopolitics+OR+conflict+OR+war+site:reuters.com&hl=en-US&gl=US&ceid=US:en",                            "tier": 1, "category": "geopolitics"},
+    {"name": "Geo BBC World",     "url": "https://news.google.com/rss/search?q=war+OR+conflict+OR+crisis+site:bbc.com&hl=en-US&gl=US&ceid=US:en",                                     "tier": 1, "category": "geopolitics"},
+
+    # ── 特朗普动向 / Trump Watch (Tier 1, poll every 30 min) ─────────────────
+    {"name": "Trump/CNBC",         "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15837362",                                                      "tier": 1, "category": "trump"},
+    {"name": "Trump News",         "url": "https://news.google.com/rss/search?q=Trump&hl=en-US&gl=US&ceid=US:en",                                                                      "tier": 1, "category": "trump"},
+    {"name": "Trump Policy",       "url": "https://news.google.com/rss/search?q=%22Trump+signs%22+OR+%22Trump+tariff%22+OR+%22Trump+says%22+OR+%22Trump+executive%22&hl=en-US&gl=US&ceid=US:en", "tier": 1, "category": "trump"},
+    {"name": "White House",        "url": "https://news.google.com/rss/search?q=%22White+House%22+Trump&hl=en-US&gl=US&ceid=US:en",                                                   "tier": 1, "category": "trump"},
 
     # ── 美股 / US Stocks (poll every 60 min) ────────────────────────────────
     {"name": "MarketWatch",        "url": "https://feeds.marketwatch.com/marketwatch/topstories/",                                             "tier": 2, "category": "us_stock"},

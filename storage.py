@@ -524,7 +524,7 @@ def record_digest_sent(date_str: str, hour: int):
 def get_recent_posts_by_category(hours: int = 24, limit_per_category: int = 10) -> dict[str, list[dict]]:
     """Return recent posts grouped by category for the daily briefing."""
     cutoff = datetime.utcfromtimestamp(datetime.utcnow().timestamp() - hours * 3600).isoformat()
-    categories = ["ai", "papers", "web3", "venture", "us_stock", "polymarket"]
+    categories = ["polymarket", "venture", "us_stock", "trump", "geopolitics", "ai", "papers", "web3"]
     result = {}
     with get_conn() as conn:
         for cat in categories:
@@ -535,6 +535,26 @@ def get_recent_posts_by_category(hours: int = 24, limit_per_category: int = 10) 
                 (cat, cutoff, cutoff, limit_per_category * 3),
             ).fetchall()
             posts = [dict(r) for r in rows]
+            # For trump, also mix in tweets (nitter / X) normalised as post-like dicts
+            if cat == "trump":
+                tweet_rows = conn.execute(
+                    """SELECT * FROM tweets WHERE category='trump' AND created_at >= ?
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (cutoff, limit_per_category),
+                ).fetchall()
+                for t in tweet_rows:
+                    td = dict(t)
+                    posts.append({
+                        "id":       td["id"],
+                        "title":    td["text"][:280],
+                        "source":   "@" + td["username"],
+                        "url":      td.get("url", ""),
+                        "published": td["created_at"],
+                        "category": "trump",
+                        "summary":  td["text"],
+                        "is_tweet": True,
+                    })
+                posts.sort(key=lambda x: x.get("published", ""), reverse=True)
             if cat == "polymarket" and posts:
                 from polymarket_monitor import _global_score, _topic_cluster, _BLOCKED_TOPICS
                 posts = [p for p in posts if not any(b in p["title"].lower() for b in _BLOCKED_TOPICS)]

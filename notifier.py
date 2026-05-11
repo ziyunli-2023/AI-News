@@ -292,8 +292,23 @@ class EmailNotifier:
 
         subject = f"看牛韵新闻，抓财富风云 · {label} · {now_str}"
 
-        # ── AI digest summary ──────────────────────────────────────────────
-        digest_summary = ai_processor.generate_digest_summary(batch)
+        # ── AI digest summary — balanced by category priority ─────────────
+        _digest_quota = {"us_stock": 8, "trump": 7, "geopolitics": 7, "venture": 6,
+                         "polymarket": 5, "ai": 5, "papers": 3, "web3": 3}
+        _posts_by_cat: dict[str, list] = {}
+        for b in batch:
+            cat = b["item"].get("category") or "ai"
+            _posts_by_cat.setdefault(cat, []).append(b)
+        def _q(b):
+            d = b["item"]
+            return (int(d.get("hn_score") or 0)
+                    + int(d.get("hf_upvotes") or 0) * 2
+                    + float(d.get("paper_score") or 0))
+        digest_batch = []
+        for cat, quota in _digest_quota.items():
+            items_for_cat = sorted(_posts_by_cat.get(cat, []), key=_q, reverse=True)
+            digest_batch.extend(items_for_cat[:quota])
+        digest_summary = ai_processor.generate_digest_summary(digest_batch)
 
         # ── HTML body ──────────────────────────────────────────────────────
         html_parts = ["""
@@ -533,10 +548,13 @@ class EmailNotifier:
 
             CATEGORY_ORDER = [
                 ("polymarket",  "🎯", "预测市场"),
-                ("us_stock",    "🇺🇸", "美股"),
-                ("ai",          "🤖", "AI 前沿"),
-                ("web3",        "⛓️", "Web3"),
                 ("venture",     "💰", "创投圈"),
+                ("us_stock",    "📈", "美股"),
+                ("trump",       "🇺🇸", "特朗普动向"),
+                ("geopolitics", "🌍", "地缘政治"),
+                ("ai",          "🤖", "AI 前沿"),
+                ("papers",      "📄", "AI 论文"),
+                ("web3",        "⛓️", "Web3"),
             ]
             seen_cats = {c for c, _, _ in CATEGORY_ORDER}
             extras = [(c, "📌", c) for c in by_cat.keys() if c not in seen_cats]

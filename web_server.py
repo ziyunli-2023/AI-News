@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Set
 
+import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="YunFlow")
 
 _CACHE_TTL = 30 * 60  # 30 minutes
+_MARKETS_TTL = 10     # 10 seconds
+_markets_cache: dict = {}
+_markets_cache_at: float = 0
 _briefing_cache: dict = {}   # keyed by lang
 _briefing_cache_at: dict = {}
 _digest_cache: dict = {}     # keyed by lang
@@ -65,7 +69,8 @@ def _lazy_translate(posts: list[dict], tweets: list[dict]):
             targets.append(("post", p, "title_zh", p["title"]))
         if p.get("category") == "polymarket":
             continue  # summary contains Yes/No odds — keep in English
-        if not p.get("summary_zh") and p.get("summary"):
+        if (not p.get("summary_zh") and p.get("summary")
+                and p["summary"].strip() != p.get("title", "").strip()):
             targets.append(("post", p, "summary_zh", p["summary"][:500]))
     for t in tweets:
         if not t.get("text_zh") and t.get("text"):
@@ -111,9 +116,26 @@ def get_news(limit: int = 30, source: str = None, category: str = None):
         _lazy_translate(posts, [])
         return [{"type": "post", "date": p.get("published", ""), "data": p} for p in posts]
 
+    # Trump mode: tweets pinned at top, then news articles.
+    if category == "trump":
+        posts  = storage.get_latest_posts_by_category("trump", limit=limit)
+        tweets = storage.get_latest_tweets(limit=10, category="trump")
+        _lazy_translate(posts, tweets)
+        tweet_items = [{"type": "tweet", "date": t["created_at"], "data": t} for t in tweets]
+        post_items  = [{"type": "post",  "date": p.get("published", ""), "data": p} for p in posts]
+        tweet_items.sort(key=lambda x: x["date"], reverse=True)
+        post_items.sort(key=lambda x: x["date"],  reverse=True)
+        return (tweet_items + post_items)[:limit]
+
     # Polymarket mode: posts only, sorted by fetched_at (most recently refreshed first).
     if category == "polymarket":
         posts = storage.get_latest_posts_by_category("polymarket", limit=limit)
+        _lazy_translate(posts, [])
+        return [{"type": "post", "date": p.get("published", ""), "data": p} for p in posts]
+
+    # Venture / Web3 / US Stock / Geopolitics mode: fetch by category directly.
+    if category in ("venture", "web3", "us_stock", "geopolitics"):
+        posts = storage.get_latest_posts_by_category(category, limit=limit)
         _lazy_translate(posts, [])
         return [{"type": "post", "date": p.get("published", ""), "data": p} for p in posts]
 
@@ -149,6 +171,60 @@ def visit_stats():
     return storage.get_visit_stats()
 
 
+_MARKET_SYMBOLS = [
+    {"symbol": "^IXIC",   "name": "NASDAQ", "name_en": "NASDAQ"},
+    {"symbol": "GC=F",    "name": "GOLD",   "name_en": "Gold"},
+    {"symbol": "CL=F",    "name": "WTI",   "name_en": "WTI"},
+    {"symbol": "BTC-USD", "name": "BTC",   "name_en": "BTC"},
+]
+
+_YF_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
+
+def _fetch_one_market(sym: str, name: str, name_en: str) -> dict:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d"
+    resp = httpx.get(url, timeout=8, headers=_YF_HEADERS)
+    meta = resp.json()["chart"]["result"][0]["meta"]
+    price = meta.get("regularMarketPrice")
+    prev  = meta.get("chartPreviousClose") or meta.get("previousClose") or price
+    change = round(price - prev, 4) if price is not None and prev else None
+    pct    = round(change / prev * 100, 2) if change is not None and prev else None
+    return {
+        "symbol":  sym,
+        "name":    name,
+        "name_en": name_en,
+        "price":   round(price, 2) if price is not None else None,
+        "change":  change,
+        "pct":     pct,
+        "ts":      meta.get("regularMarketTime"),
+    }
+
+
+@app.get("/api/markets")
+def get_markets():
+    global _markets_cache, _markets_cache_at
+    if _markets_cache and time.time() - _markets_cache_at < _MARKETS_TTL:
+        return _markets_cache
+
+    result = []
+    for m in _MARKET_SYMBOLS:
+        try:
+            result.append(_fetch_one_market(m["symbol"], m["name"], m["name_en"]))
+        except Exception as e:
+            logger.warning("market fetch failed for %s: %s", m["symbol"], e)
+            # keep last known value for this symbol if available
+            existing = next((x for x in _markets_cache if x["symbol"] == m["symbol"]), None)
+            if existing:
+                result.append(existing)
+
+    if result:
+        _markets_cache = result
+        _markets_cache_at = time.time()
+    return result
+
+
 @app.get("/api/podcasts")
 def get_podcasts():
     podcasts = [f for f in config.RSS_FEEDS if f.get("podcast")]
@@ -171,10 +247,20 @@ def digest_summary(lang: str = "zh"):
     if _digest_cache.get(lang) is not None and time.time() - _digest_cache_at.get(lang, 0) < _CACHE_TTL:
         return {"summary": _digest_cache[lang]}
     import ai_processor
-    posts  = storage.get_latest_posts(limit=20)
-    tweets = storage.get_latest_tweets(limit=10)
-    items  = [{"type": "post",  "data": p} for p in posts]
-    items += [{"type": "tweet", "data": t} for t in tweets]
+    # Each category contributes a fixed quota so the digest stays balanced
+    posts_by_cat = storage.get_recent_posts_by_category(hours=24, limit_per_category=15)
+    CAT_QUOTA = {"us_stock": 8, "trump": 7, "geopolitics": 7, "venture": 6,
+                 "polymarket": 5, "ai": 5, "papers": 3, "web3": 3}
+    def _quality(p):
+        return (int(p.get("hn_score") or 0)
+                + int(p.get("hf_upvotes") or 0) * 2
+                + float(p.get("paper_score") or 0))
+    all_posts = []
+    for cat, posts in posts_by_cat.items():
+        quota = CAT_QUOTA.get(cat, 4)
+        top = sorted(posts, key=_quality, reverse=True)[:quota]
+        all_posts.extend(top)
+    items = [{"type": "post", "data": p} for p in all_posts]
     result = ai_processor.generate_digest_summary(items, lang=lang)
     if result:
         _digest_cache[lang] = result
@@ -183,9 +269,9 @@ def digest_summary(lang: str = "zh"):
 
 
 @app.get("/api/briefing")
-def daily_briefing(lang: str = "zh"):
+def daily_briefing(lang: str = "zh", refresh: bool = False):
     """Return cached daily briefing; regenerate if cache is older than 30 min."""
-    if _briefing_cache.get(lang) is not None and time.time() - _briefing_cache_at.get(lang, 0) < _CACHE_TTL:
+    if not refresh and _briefing_cache.get(lang) is not None and time.time() - _briefing_cache_at.get(lang, 0) < _CACHE_TTL:
         return _briefing_cache[lang]
     import ai_processor
     posts_by_cat = storage.get_recent_posts_by_category(hours=24, limit_per_category=30)
@@ -302,8 +388,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .refresh-btn { background: none; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 12px; padding: 3px 9px; cursor: pointer; transition: border-color .12s, color .12s; }
   .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-  .briefing-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
-  @media (max-width: 1300px) { .briefing-grid { grid-template-columns: repeat(3, 1fr); } }
+  .briefing-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  @media (max-width: 1100px) { .briefing-grid { grid-template-columns: repeat(2, 1fr); } }
   @media (max-width: 719px)  { .briefing-grid { grid-template-columns: 1fr; } }
 
   .b-section { background: var(--surface2); border-radius: 8px; padding: 12px 13px; border: 1px solid var(--border); }
@@ -389,6 +475,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .ep-title a:hover { color: var(--accent); text-decoration: underline; }
   .ep-empty { font-size: 14px; color: var(--muted); font-style: italic; }
 
+  /* ── Trump avatar ── */
+  .trump-avatar { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; vertical-align: middle; flex-shrink: 0; }
+  .trump-bnav   { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; }
+
+  /* ── Trump Watch ── */
+  .trump-panel { background: var(--surface); border: 2px solid #dc2626; border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; box-shadow: 0 2px 12px rgba(220,38,38,.12); }
+  [data-theme="dark"] .trump-panel { box-shadow: 0 2px 12px rgba(220,38,38,.2); }
+  .trump-view-btn { background: none; border: 1px solid #dc2626; border-radius: 5px; color: #dc2626; font-size: 12px; font-weight: 700; padding: 3px 10px; cursor: pointer; transition: background .12s; }
+  .trump-view-btn:hover { background: #fef2f2; }
+  [data-theme="dark"] .trump-view-btn:hover { background: #3a0a0a; }
+  .trump-list { display: flex; flex-direction: column; gap: 8px; }
+  .trump-item { padding: 9px 11px; background: var(--surface2); border-radius: 7px; border-left: 3px solid #dc2626; }
+  .trump-item-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+  .trump-src { font-size: 11px; font-weight: 700; color: #dc2626; }
+  .trump-date { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .trump-title { font-size: 14px; color: var(--text); line-height: 1.4; }
+  .trump-title a { color: inherit; text-decoration: none; }
+  .trump-title a:hover { color: #dc2626; text-decoration: underline; }
+  .nav-btn.trump-active { background: #fef2f2; color: #dc2626; font-weight: 600; }
+  [data-theme="dark"] .nav-btn.trump-active { background: #3a0a0a; color: #f87171; }
+
   /* ── Mobile ── */
   .hamburger-btn { display: none; background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 18px; width: 36px; height: 36px; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
   .hamburger-btn:hover { border-color: var(--accent); color: var(--accent); }
@@ -414,6 +521,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .bnav-btn span { font-size: 18px; line-height: 1.2; }
   .bnav-btn label { cursor: pointer; }
   .bnav-btn.active { color: var(--accent); }
+
+
+  /* ── Market Ticker ── */
+  .market-bar { display: flex; align-items: stretch; gap: 0; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto; scrollbar-width: none; }
+  .market-bar::-webkit-scrollbar { display: none; }
+  .market-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 8px 20px; min-width: 120px; flex: 1; border-right: 1px solid var(--border); cursor: default; transition: background .12s; position: relative; }
+  .market-tile:last-child { border-right: none; }
+  .market-tile:hover { background: var(--surface2); }
+  .market-tile-name { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 2px; }
+  .market-tile-price { font-size: 16px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .market-tile-change { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 1px; }
+  .market-up   { color: var(--green); }
+  .market-down { color: var(--red); }
+  .market-flat { color: var(--muted); }
+  .market-bar-footer { font-size: 10px; color: var(--muted); padding: 0 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; flex-shrink: 0; }
+  .market-refresh-btn { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+  .market-refresh-btn:hover { color: var(--accent); }
+  @media (max-width: 719px) {
+    .market-bar { overflow-x: hidden; }
+    .market-tile { padding: 6px 4px; flex: 0 0 25%; min-width: 0; border-right: 1px solid var(--border); }
+    .market-tile-name { font-size: 10px; }
+    .market-tile-price { font-size: 13px; letter-spacing: -.03em; }
+    .market-tile-change { font-size: 10px; }
+    .market-bar-footer { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -434,11 +566,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <div class="nav-section" data-i18n="secCategories" style="margin-top:6px;">分类</div>
     <button class="nav-btn" onclick="setCategory('polymarket',this)"><span data-i18n="navPolymarket">🎯 Polymarket</span><span class="cnt" id="cnt-polymarket">0</span></button>
+    <button class="nav-btn" onclick="setCategory('venture',this)"><span data-i18n="navVenture">💼 创投</span><span class="cnt" id="cnt-venture">0</span></button>
     <button class="nav-btn" onclick="setCategory('us_stock',this)"><span data-i18n="navStocks">📈 美股</span><span class="cnt" id="cnt-us_stock">0</span></button>
+    <button class="nav-btn" id="navTrump" onclick="setCategory('trump',this)"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/5/56/Donald_Trump_official_portrait.jpg/40px-Donald_Trump_official_portrait.jpg" class="trump-avatar" onerror="this.replaceWith(document.createTextNode('🇺🇸'))"><span> Trump</span><span class="cnt" id="cnt-trump">0</span></button>
+    <button class="nav-btn" onclick="setCategory('geopolitics',this)"><span data-i18n="navGeopolitics">🌍 地缘政治</span><span class="cnt" id="cnt-geopolitics">0</span></button>
     <button class="nav-btn" onclick="setCategory('ai',this)"><span data-i18n="navAI">🤖 AI</span><span class="cnt" id="cnt-ai">0</span></button>
     <button class="nav-btn" onclick="setCategory('papers',this)"><span data-i18n="navPapers">📄 论文</span><span class="cnt" id="cnt-papers">0</span></button>
     <button class="nav-btn" onclick="setCategory('web3',this)"><span data-i18n="navWeb3">🔗 Web3</span><span class="cnt" id="cnt-web3">0</span></button>
-    <button class="nav-btn" onclick="setCategory('venture',this)"><span data-i18n="navVenture">💼 创投</span><span class="cnt" id="cnt-venture">0</span></button>
 
     <div class="nav-section" data-i18n="secFilter" style="margin-top:6px;">筛选</div>
     <button class="nav-btn" onclick="setFilter('posts',this)"><span data-i18n="navPosts">📰 博客文章</span><span class="cnt" id="cnt-posts">0</span></button>
@@ -470,6 +604,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
       <button class="lang-pill" id="langPill" onclick="toggleLang()">EN</button>
       <div class="new-pill" id="newBadge" onclick="scrollToTop()">↑ 有新内容</div>
+    </div>
+
+    <!-- Market Ticker -->
+    <div class="market-bar" id="marketBar">
+      <div class="market-tile" id="mkt-IXIC"><div class="market-tile-name">NASDAQ</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+      <div class="market-tile" id="mkt-GC"><div class="market-tile-name">GOLD</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+      <div class="market-tile" id="mkt-CL"><div class="market-tile-name">WTI</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+      <div class="market-tile" id="mkt-BTC"><div class="market-tile-name">BTC</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+      <div class="market-bar-footer"><span id="marketUpdated"></span><button class="market-refresh-btn" onclick="loadMarkets()" title="刷新">↻</button></div>
     </div>
 
     <div class="feed" id="feed">
@@ -504,11 +647,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <nav class="bottom-nav" id="bottomNav">
   <button class="bnav-btn" onclick="setFilter('all',null);bnav(this)"><span>🌐</span><label data-i18n="bnavAll">全部</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('polymarket',this)"><span>🎯</span><label data-i18n="bnavPolymarket">预测</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('venture',this)"><span>💼</span><label data-i18n="bnavVenture">创投</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('us_stock',this)"><span>📈</span><label data-i18n="bnavStocks">美股</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('geopolitics',this)"><span>🌍</span><label data-i18n="bnavGeo">地缘</label></button>
+  <button class="bnav-btn" onclick="setCategoryMobile('trump',this)"><span>🇺🇸</span><label data-i18n="bnavTrump">特朗普</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('ai',this)"><span>🤖</span><label>AI</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('papers',this)"><span>📄</span><label data-i18n="bnavPapers">论文</label></button>
   <button class="bnav-btn" onclick="setCategoryMobile('web3',this)"><span>🔗</span><label>Web3</label></button>
-  <button class="bnav-btn" onclick="toggleSidebar()"><span>☰</span><label data-i18n="bnavMore">更多</label></button>
 </nav>
 
 <script>
@@ -516,14 +661,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 const STRINGS = {
   zh: {
     navAll:'🌐 全部', navAI:'🤖 AI', navPapers:'📄 论文', navWeb3:'🔗 Web3',
-    navVenture:'💼 创投', navStocks:'📈 美股', navPolymarket:'🎯 Polymarket', navPosts:'📰 博客文章',
-    navTweets:'𝕏 推文', navPodcasts:'🎙 播客',
+    navVenture:'💼 创投', navStocks:'📈 美股', navPolymarket:'🎯 Polymarket', navGeopolitics:'🌍 地缘政治', navPosts:'📰 博客文章',
+    navTweets:'𝕏 推文', navPodcasts:'🎙 播客', navTrump:'🇺🇸 特朗普',
     secCategories:'分类', secFilter:'筛选', secSources:'来源',
     statPosts:'文章', statTweets:'推文', statLatest:'最新',
     statVisitTotal:'总访问', statVisitToday:'今日', statVisitWeek:'本周', statVisitMonth:'本月',
     connecting:'连接中…', connected:'实时连接', reconnecting:'重连中…',
     searchPlaceholder:'搜索新闻…', newBadge:'↑ 有新内容',
     digestTitle:'📋 资讯摘要', briefingTitle:'⚡ 每日要闻速报',
+    trumpTitle:'🇺🇸 特朗普动向', trumpViewAll:'查看全部 →',
     refresh:'↻ 刷新', loadingDigest:'正在生成摘要…', loadingBriefing:'正在生成速报…',
     noData:'暂无数据', digestFail:'摘要生成失败', briefingFail:'速报生成失败',
     updatedAt: v => v + ' 更新',
@@ -535,17 +681,19 @@ const STRINGS = {
     recentEps:'最近更新', noEps:'暂无记录，等待下次抓取…',
     featured:'精选', polymarketTag:'🎯 预测市场', bnavPolymarket:'预测',
     bnavAll:'全部', bnavPapers:'论文', bnavVenture:'创投', bnavStocks:'美股', bnavMore:'更多',
+    bnavTrump:'特朗普', bnavGeo:'地缘',
   },
   en: {
     navAll:'🌐 All', navAI:'🤖 AI', navPapers:'📄 Papers', navWeb3:'🔗 Web3',
-    navVenture:'💼 Venture', navStocks:'📈 US Stocks', navPolymarket:'🎯 Polymarket', navPosts:'📰 Posts',
-    navTweets:'𝕏 Tweets', navPodcasts:'🎙 Podcasts',
+    navVenture:'💼 Venture', navStocks:'📈 US Stocks', navPolymarket:'🎯 Polymarket', navGeopolitics:'🌍 Geopolitics', navPosts:'📰 Posts',
+    navTweets:'𝕏 Tweets', navPodcasts:'🎙 Podcasts', navTrump:'🇺🇸 Trump',
     secCategories:'Categories', secFilter:'Filter', secSources:'Sources',
     statPosts:'Posts', statTweets:'Tweets', statLatest:'Latest',
     statVisitTotal:'Total visits', statVisitToday:'Today', statVisitWeek:'This week', statVisitMonth:'This month',
     connecting:'Connecting…', connected:'Live', reconnecting:'Reconnecting…',
     searchPlaceholder:'Search news…', newBadge:'↑ New items',
     digestTitle:'📋 News Digest', briefingTitle:'⚡ Daily Briefing',
+    trumpTitle:'🇺🇸 Trump Watch', trumpViewAll:'View all →',
     refresh:'↻ Refresh', loadingDigest:'Generating digest…', loadingBriefing:'Generating briefing…',
     noData:'No data', digestFail:'Digest failed', briefingFail:'Briefing failed',
     updatedAt: v => 'Updated ' + v,
@@ -557,6 +705,7 @@ const STRINGS = {
     recentEps:'Recent Episodes', noEps:'No episodes yet…',
     featured:'Featured', polymarketTag:'🎯 Prediction', bnavPolymarket:'Predict',
     bnavAll:'All', bnavPapers:'Papers', bnavVenture:'VC', bnavStocks:'Stocks', bnavMore:'More',
+    bnavTrump:'Trump', bnavGeo:'Geo',
   }
 };
 let lang = localStorage.getItem('lang') || 'zh';
@@ -607,6 +756,8 @@ function bnav(el) {
   document.querySelectorAll('.bnav-btn').forEach(b => b.classList.remove('active'));
   if (el) el.classList.add('active');
 }
+
+
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 function applyTheme(t) {
@@ -785,7 +936,8 @@ function makeCard(item, isNew) {
       zh.className = 'card-title-zh'; zh.textContent = d.title_zh;
       div.appendChild(zh);
     }
-    if (lang === 'zh' && d.summary_zh) {
+    const normZh = s => s.trim().replace(/[\s\-–—]/g, '');
+    if (lang === 'zh' && d.summary_zh && normZh(d.summary_zh) !== normZh(d.title_zh||'')) {
       const sz = document.createElement('div');
       sz.className = 'card-summary-zh'; sz.textContent = d.summary_zh;
       div.appendChild(sz);
@@ -862,6 +1014,7 @@ function filterItems(items) {
 function showPanels(show) {
   document.querySelector('.briefing-panel').style.display = show ? '' : 'none';
   document.querySelector('.digest-panel').style.display = show ? '' : 'none';
+
 }
 function setCategoryMobile(cat, el) {
   showPanels(false);
@@ -880,7 +1033,7 @@ function updateCounts() {
   document.getElementById('cnt-all').textContent    = allItems.length;
   document.getElementById('cnt-posts').textContent  = allItems.filter(i=>i.type==='post').length;
   document.getElementById('cnt-tweets').textContent = allItems.filter(i=>i.type==='tweet').length;
-  ['ai','papers','web3','venture','us_stock','polymarket'].forEach(cat => {
+  ['trump','ai','papers','web3','venture','us_stock','polymarket','geopolitics'].forEach(cat => {
     const el = document.getElementById('cnt-' + cat);
     if (el) el.textContent = allItems.filter(i=>i.data.category===cat).length;
   });
@@ -894,9 +1047,9 @@ async function setCategory(cat, btn) {
   const feed = document.getElementById('cardFeed');
   feed.textContent = '';
 
-  // Papers / Polymarket: fetch from server for proper ordering.
-  if (cat === 'papers' || cat === 'polymarket') {
-    const loadMsg = cat === 'papers' ? t('loadingPapers') : t('loadingPolymarket');
+  // Trump / Papers / Polymarket / Venture / Web3 / US Stock: fetch from server.
+  if (cat === 'trump' || cat === 'papers' || cat === 'polymarket' || cat === 'venture' || cat === 'web3' || cat === 'us_stock' || cat === 'geopolitics') {
+    const loadMsg = cat === 'papers' ? t('loadingPapers') : cat === 'polymarket' ? t('loadingPolymarket') : t('loading');
     feed.appendChild(makeEmptyEl('⏳', loadMsg));
     try {
       const res = await fetch('/api/news?category=' + cat + '&limit=50');
@@ -946,6 +1099,48 @@ function filterSource(src, btn) {
   closeSidebar();
 }
 
+// ── Trump Watch ───────────────────────────────────────────────────────────
+async function loadTrumpWatch() {
+  const body = document.getElementById('trumpBody');
+  body.innerHTML = '<span class="panel-loading">' + t('loading') + '</span>';
+  try {
+    const items = await fetch('/api/news?category=trump&limit=7').then(r => r.json());
+    body.textContent = '';
+    if (!items.length) {
+      body.textContent = t('noData');
+      return;
+    }
+    const list = document.createElement('div');
+    list.className = 'trump-list';
+    items.forEach(item => {
+      const d = item.data;
+      const row = document.createElement('div');
+      row.className = 'trump-item';
+
+      const meta = document.createElement('div');
+      meta.className = 'trump-item-meta';
+      const src = document.createElement('span');
+      src.className = 'trump-src';
+      src.textContent = item.type === 'tweet' ? '𝕏 @' + d.username : d.source;
+      const dateEl = document.createElement('span');
+      dateEl.className = 'trump-date';
+      dateEl.textContent = (d.created_at || d.published || '').slice(0, 16).replace('T', ' ');
+      meta.appendChild(src); meta.appendChild(dateEl);
+
+      const titleEl = document.createElement('div');
+      titleEl.className = 'trump-title';
+      const a = document.createElement('a');
+      a.href = d.url || '#'; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = item.type === 'tweet' ? d.text : d.title;
+      titleEl.appendChild(a);
+
+      row.appendChild(meta); row.appendChild(titleEl);
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+  } catch(e) { body.textContent = t('loadFail'); }
+}
+
 // ── Briefing ──────────────────────────────────────────────────────────────
 async function loadBriefing() {
   const body = document.getElementById('briefingBody');
@@ -961,7 +1156,16 @@ async function loadBriefing() {
     sections.forEach(s => {
       const sec = document.createElement('div'); sec.className = 'b-section';
       const title = document.createElement('div'); title.className = 'b-title';
-      title.textContent = (s.icon||'') + ' ' + (s.label||s.category);
+      if (s.category === 'trump') {
+        const img = document.createElement('img');
+        img.src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/56/Donald_Trump_official_portrait.jpg/40px-Donald_Trump_official_portrait.jpg';
+        img.className = 'trump-avatar';
+        img.onerror = function() { this.replaceWith(document.createTextNode('🇺🇸')); };
+        title.appendChild(img);
+        title.appendChild(document.createTextNode(' ' + (s.label||s.category)));
+      } else {
+        title.textContent = (s.icon||'') + ' ' + (s.label||s.category);
+      }
       sec.appendChild(title);
       const ul = document.createElement('ul'); ul.className = 'b-list';
       (s.points||[]).forEach(p => {
@@ -1137,10 +1341,45 @@ function scrollToTop() {
   document.getElementById('newBadge').classList.remove('show');
 }
 
+// ── Markets ───────────────────────────────────────────────────────────────
+const MARKET_ID_MAP = {
+  '^IXIC': 'IXIC', 'GC=F': 'GC', 'CL=F': 'CL', 'BTC-USD': 'BTC'
+};
+async function loadMarkets() {
+  try {
+    const data = await fetch('/api/markets').then(r => r.json());
+    data.forEach(m => {
+      const id = MARKET_ID_MAP[m.symbol];
+      if (!id) return;
+      const tile = document.getElementById('mkt-' + id);
+      if (!tile) return;
+      const [nameEl, priceEl, changeEl] = tile.children;
+      if (m.price !== null && m.price !== undefined) {
+        const isBTC = m.symbol === 'BTC-USD';
+        priceEl.textContent = isBTC
+          ? m.price.toLocaleString('en-US', {maximumFractionDigits: 0})
+          : m.price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        const up = m.change >= 0;
+        const sign = up ? '+' : '';
+        const chAbs = Math.abs(m.change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        const chPct = (up ? '+' : '') + (m.pct !== null ? m.pct.toFixed(2) : '0.00') + '%';
+        changeEl.textContent = sign + chAbs + ' (' + chPct + ')';
+        changeEl.className = 'market-tile-change ' + (up ? 'market-up' : 'market-down');
+      }
+    });
+    const now = new Date();
+    const ts = now.toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US', {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+    const el = document.getElementById('marketUpdated');
+    if (el) el.textContent = ts;
+  } catch(e) { /* silently ignore */ }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────
 connectWS(); loadBriefing(); loadDigest();
 setInterval(updateStats, 60000);
 setInterval(loadBriefing, 30 * 60 * 1000);
+loadMarkets();
+setInterval(loadMarkets, 10000);
 loadNews();
 </script>
 </body>

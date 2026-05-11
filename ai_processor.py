@@ -140,20 +140,24 @@ def generate_daily_briefing(posts_by_category: dict, lang: str = "zh") -> dict:
 
     CATEGORY_META = {
         "zh": {
-            "polymarket":  {"label": "预测市场", "icon": "🎯"},
-            "us_stock":    {"label": "美股",     "icon": "🇺🇸"},
-            "ai":          {"label": "AI 前沿",  "icon": "🤖"},
-            "papers":      {"label": "AI 论文",  "icon": "📄"},
-            "web3":        {"label": "Web3",     "icon": "⛓️"},
-            "venture":     {"label": "创投圈",   "icon": "💰"},
+            "polymarket":  {"label": "预测市场",   "icon": "🎯"},
+            "venture":     {"label": "创投圈",     "icon": "💰"},
+            "us_stock":    {"label": "美股",       "icon": "📈"},
+            "trump":       {"label": "特朗普动向", "icon": "🇺🇸"},
+            "geopolitics": {"label": "地缘政治",   "icon": "🌍"},
+            "ai":          {"label": "AI 前沿",    "icon": "🤖"},
+            "papers":      {"label": "AI 论文",    "icon": "📄"},
+            "web3":        {"label": "Web3",       "icon": "⛓️"},
         },
         "en": {
-            "polymarket":  {"label": "Prediction Markets","icon": "🎯"},
-            "us_stock":    {"label": "US Stocks",        "icon": "🇺🇸"},
-            "ai":          {"label": "AI",               "icon": "🤖"},
-            "papers":      {"label": "Papers",           "icon": "📄"},
-            "web3":        {"label": "Web3",             "icon": "⛓️"},
-            "venture":     {"label": "Venture",          "icon": "💰"},
+            "polymarket":  {"label": "Prediction Markets", "icon": "🎯"},
+            "venture":     {"label": "Venture",            "icon": "💰"},
+            "us_stock":    {"label": "US Stocks",          "icon": "📈"},
+            "trump":       {"label": "Trump Watch",        "icon": "🇺🇸"},
+            "geopolitics": {"label": "Geopolitics",        "icon": "🌍"},
+            "ai":          {"label": "AI",                 "icon": "🤖"},
+            "papers":      {"label": "Papers",             "icon": "📄"},
+            "web3":        {"label": "Web3",               "icon": "⛓️"},
         },
     }
     meta_map = CATEGORY_META.get(lang, CATEGORY_META["zh"])
@@ -189,51 +193,75 @@ def generate_daily_briefing(posts_by_category: dict, lang: str = "zh") -> dict:
 
 {news_text}
 
-Your task: For each category, SELECT the 4-5 most newsworthy items and write a punchy bullet for each.
-Selection criteria: global impact, specific numbers/names, market-moving events, breakthroughs — NOT routine updates or minor news.
+Your task: For each category, select only the genuinely important items and write a punchy bullet for each.
+General selection criteria: global impact, specific numbers/names, market-moving events, breakthroughs — NOT routine updates or minor news.
+
+Trump Watch vs Geopolitics — strict split (no overlap allowed):
+- Trump Watch: Trump's OWN actions and statements — orders he signs, tariffs he imposes, deals he announces, summits he attends, threats/warnings he issues. The subject of the bullet must be Trump himself.
+- Geopolitics: The conflict or situation itself — military strikes, frontline movements, ceasefires, negotiations between other parties, casualties, troop deployments. Trump may be mentioned as context, but must NOT be the subject.
+- If Trump announces a ceasefire → Trump Watch. If fighting escalates on the ground → Geopolitics. Never write the same event in both sections.
+
+Trump Watch additional filter: SKIP entertainment tweets, movie/TV promotions, rally speeches, and personal/family content.
 Requirements:
+- Number of points per category: 1–4, based on how much genuinely important news exists. Do NOT pad with minor items to hit 4.
 - Each bullet under 20 words, direct and specific
 - Must reference the actual event, company, or number — no vague summaries
+- Venture/IPO: prioritize IPO filings (S-1), pricing, listing dates, unicorn funding rounds; always include company name and valuation or raise amount
+- Geopolitics: cover all major conflicts and tensions (Middle East, Russia-Ukraine, China-Taiwan, North Korea, etc.) — must include location, parties involved, or specific development; skip routine diplomatic noise
 - For categories with no data, use src 0 and text "No major updates"
 - Return strictly in this JSON format, no extra content:
 
 {{"sections": [
   {{"category": "polymarket",  "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 3}}]}},
+  {{"category": "venture",     "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 6}}]}},
   {{"category": "us_stock",    "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 4}}]}},
+  {{"category": "trump",       "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 3}}]}},
+  {{"category": "geopolitics", "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 2}}]}},
   {{"category": "ai",          "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 5}}]}},
   {{"category": "papers",      "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 3}}]}},
-  {{"category": "web3",        "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 4}}]}},
-  {{"category": "venture",     "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 6}}]}}
+  {{"category": "web3",        "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 4}}]}}
 ]}}"""
     else:
         prompt = f"""以下是今日各板块的候选资讯（数量超出需要，你需要主动挑选最重要的）：
 
 {news_text}
 
-你的任务：每个板块从候选项中挑出 4~5 条最值得关注的，写成简洁有力的速报要点。
+你的任务：每个板块从候选项中挑出真正重要的内容，写成简洁有力的速报要点。
 挑选标准：全球影响力、具体数字/事件/人名、市场震动、重大突破——日常更新、常规动态不选。
+
+特朗普动向 vs 地缘政治——严格分工，禁止重叠：
+- 特朗普动向：特朗普本人的行动与表态——他签署的命令、他宣布的关税/协议、他出席的峰会、他发出的威胁。每条要点的主语必须是特朗普本人。
+- 地缘政治：冲突/局势本身的发展——军事打击、前线动态、停火谈判（其他当事方）、伤亡、兵力部署。特朗普可作为背景提及，但不得作为主语。
+- 判断示例：特朗普宣布停火方案 → 特朗普动向；前线爆发交火 → 地缘政治。同一事件绝不在两个板块同时出现。
+- 特朗普动向额外过滤：娱乐推文、电影宣传、竞选集会、个人生活内容一律不选。
+
 写作要求：
+- 每个板块条数：1~4 条，根据实际重要新闻数量决定，不要为凑数选无关紧要的内容
 - 每条 35 字以内，直接点名事件、数字、公司
+- 地缘政治：覆盖所有重大冲突与紧张局势（中东、俄乌、台海、朝鲜半岛等）——必须包含地点、当事方或具体进展；外交常规动态不选
 - 预测市场：必须给出概率和成交量，用"市场押注"、"赔率显示"等措辞，体现分歧与戏剧性
-- 美股/创投：突出涨跌幅、融资金额、具体公司名
+- 美股：突出涨跌幅、重大事件、具体公司名
+- 创投/IPO：优先选 IPO 申请（S-1 filing）、定价、上市日期、独角兽融资；必须给出公司名、估值或募资金额
 - AI：突出产品发布、能力突破、重大合作
 - 没有数据的板块用 src 0，text 填"暂无重要动态"
 - 严格按以下 JSON 格式返回，不要添加其他内容：
 
 {{"sections": [
   {{"category": "polymarket",  "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 3}}]}},
+  {{"category": "venture",     "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 6}}]}},
   {{"category": "us_stock",    "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 4}}]}},
+  {{"category": "trump",       "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 3}}]}},
+  {{"category": "geopolitics", "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 2}}]}},
   {{"category": "ai",          "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 5}}]}},
   {{"category": "papers",      "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 3}}]}},
-  {{"category": "web3",        "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 4}}]}},
-  {{"category": "venture",     "points": [{{"text": "...", "src": 2}}, {{"text": "...", "src": 6}}]}}
+  {{"category": "web3",        "points": [{{"text": "...", "src": 1}}, {{"text": "...", "src": 4}}]}}
 ]}}"""
 
     try:
         resp = _get_client().chat.completions.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,
+            max_tokens=2000,
             temperature=0.6,
         )
         raw = resp.choices[0].message.content.strip()
@@ -272,33 +300,67 @@ def generate_digest_summary(items: list[dict], lang: str = "zh") -> list[str]:
     if not config.DEEPSEEK_API_KEY or not items:
         return []
 
-    candidates = items[:30]
+    candidates = items[:40]
     url_index: dict[int, str] = {}
     lines = []
     for i, item in enumerate(candidates):
         d = item.get("item") or item.get("data") or item
         url_index[i + 1] = d.get("url", "")
-        if item.get("type") == "tweet":
-            lines.append(f"{i+1}. [Tweet @{d.get('username','')}] {d.get('text','')[:100]}")
+        # Build engagement signal string
+        signals = []
+        if d.get("hn_score"):
+            signals.append(f"HN:{d['hn_score']}")
+        if d.get("hf_upvotes"):
+            signals.append(f"👍{d['hf_upvotes']}")
+        if d.get("paper_score"):
+            signals.append(f"score:{d['paper_score']:.1f}")
+        sig_str = f" [{', '.join(signals)}]" if signals else ""
+        if lang == "en":
+            summary_snippet = (d.get("summary") or d.get("summary_zh") or "")[:120]
         else:
-            lines.append(f"{i+1}. [{d.get('source','')}] {d.get('title','')}")
+            summary_snippet = (d.get("summary_zh") or d.get("summary") or "")[:120]
+        if item.get("type") == "tweet":
+            lines.append(f"{i+1}. [Tweet @{d.get('username','')}]{sig_str} {d.get('text','')[:150]}")
+        else:
+            title = d.get("title") if lang == "en" else (d.get("title_zh") or d.get("title", ""))
+            if summary_snippet:
+                lines.append(f"{i+1}. [{d.get('source','')}]{sig_str} {title} — {summary_snippet}")
+            else:
+                lines.append(f"{i+1}. [{d.get('source','')}]{sig_str} {title}")
     news_list = "\n".join(lines)
 
     if lang == "en":
-        prompt = f"""The following is today's news list (numbered):
+        prompt = f"""You are a sharp analyst selecting the most valuable news items from today's feed.
 
+News list (numbered):
 {news_list}
 
-Extract 3-6 key highlights. Requirements:
-- Each point under 20 words, specific and direct
-- Return strictly as a JSON array with text and source index, no extra text:
+Select 6-10 highlights, covering domains in this priority order (skip only if no relevant item exists):
+① US stocks/macro ② Geopolitics ③ VC/startup ④ Prediction markets ⑤ AI ⑥ Web3
+
+Rules:
+- One highlight per domain where possible
+- Prioritize: specific data/numbers, surprising findings, concrete decisions or releases
+- Avoid: generic trend summaries, vague predictions, pure opinion pieces
+- Each point under 25 words — lead with the key fact, not the source name
+
+Return strictly as a JSON array, no extra text:
 [{{"text": "highlight1", "src": 2}}, {{"text": "highlight2", "src": 5}}]"""
     else:
-        prompt = f"""以下是今天的资讯列表（已编号）：
+        prompt = f"""你是一位信息密度极高的资讯分析师，从今天的资讯中为每个领域挑出最值得关注的看点。
 
+资讯列表（已编号）：
 {news_list}
 
-请提炼出 3~6 个最重要的看点，每条 30 字以内，聚焦具体事件，不要泛泛而谈。
+选出 6~10 条看点，按以下优先级顺序覆盖各领域（该领域无相关资讯时可跳过）：
+① 美股/宏观 ② 地缘政治 ③ 风投/创业 ④ 预测市场 ⑤ AI ⑥ Web3
+
+要求：
+- 每个领域尽量各出一条
+- 优先选：有具体数据/数字的、令人意外的、有实质进展的内容
+- 避免：泛泛趋势总结、模糊预言、纯观点文章
+- 每条 30 字以内，直接说核心事实，不要说"某来源报道了XX"
+
 严格按以下 JSON 数组格式返回，不要任何额外文字：
 [{{"text": "看点1", "src": 2}}, {{"text": "看点2", "src": 5}}]"""
 
@@ -306,7 +368,7 @@ Extract 3-6 key highlights. Requirements:
         resp = _get_client().chat.completions.create(
             model="deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=600,
+            max_tokens=1000,
             temperature=0.5,
         )
         raw = resp.choices[0].message.content.strip()
