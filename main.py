@@ -15,6 +15,7 @@ from rss_monitor import RSSMonitor
 from nitter_monitor import NitterMonitor
 from papers_monitor import PapersMonitor
 from polymarket_monitor import PolymarketMonitor
+from earnings_monitor import EarningsMonitor
 from notifier import EmailNotifier
 from web_server import app, push_new_item
 
@@ -97,6 +98,9 @@ async def main():
     polymarket_mon = PolymarketMonitor(on_new_post=on_new_post)
     polymarket_mon.start()
 
+    earnings_mon = EarningsMonitor()
+    earnings_mon.start()
+
     stop_event = threading.Event()
     start_translation_worker(stop_event)
 
@@ -117,6 +121,7 @@ async def main():
         nitter_mon.stop()
         papers_mon.stop()
         polymarket_mon.stop()
+        earnings_mon.stop()
         notifier.stop()
         stop_event.set()
 

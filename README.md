@@ -71,6 +71,10 @@ EMAIL_RECIPIENT=where_to_receive@example.com
 # Required for Chinese translation (leave empty to disable)
 DEEPSEEK_API_KEY=sk-your_deepseek_key_here
 
+# Required for the earnings calendar sub-page (/earnings)
+# Free tier at https://finnhub.io/dashboard — leave empty to show macro events only
+FINNHUB_API_KEY=your_finnhub_key_here
+
 # Web dashboard port
 WEB_PORT=8000
 ```
@@ -84,6 +88,7 @@ WEB_PORT=8000
 | X Bearer Token | [developer.twitter.com](https://developer.twitter.com/en/portal/dashboard) → Create app → Bearer Token |
 | Gmail App Password | Google Account → Security → 2-Step Verification → App Passwords |
 | DeepSeek API Key | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) |
+| Finnhub API Key | [finnhub.io/dashboard](https://finnhub.io/dashboard) — free tier covers earnings + IPO calendars |
 
 ### 3. Run
 

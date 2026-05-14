@@ -247,3 +247,38 @@ EMAIL_RECIPIENT = EMAIL_RECIPIENTS[0] if EMAIL_RECIPIENTS else ""  # backwards c
 
 # ── Web dashboard ──────────────────────────────────────────────────────────
 WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
+
+# ── Earnings calendar (Finnhub) ────────────────────────────────────────────
+# Free tier: 60 req/min. Earnings + IPO calendars are free; economic calendar is paid.
+# Get a key at https://finnhub.io/dashboard (free signup).
+FINNHUB_API_KEY      = os.getenv("FINNHUB_API_KEY", "")
+EARNINGS_REFRESH_HOUR = 6        # UTC hour to refresh once a day
+EARNINGS_WINDOW_DAYS  = 45       # how far forward to fetch
+EARNINGS_PROFILE_TTL_DAYS = 30   # how long to cache /stock/profile2 data
+
+# Default filters when query params are not supplied
+# Filter logic: (market_cap >= min OR industry IN whitelist OR symbol IN watchlist)
+EARNINGS_DEFAULT_MIN_CAP_M = 10000   # $10B+ by default
+EARNINGS_INDUSTRIES_DEFAULT = [
+    "Semiconductors", "Technology", "Software", "Media",
+    "Communication Services", "Communication", "Internet Content & Information",
+    "Consumer Cyclical", "Consumer Electronics",
+    "Financial Services", "Banks", "Insurance",
+    "Healthcare", "Biotechnology", "Pharmaceuticals",
+    "Energy", "Aerospace & Defense", "Retail",
+]
+# Always-included hot tickers (mega-cap + China ADRs + AI/Web3 leaders)
+EARNINGS_WATCHLIST = [
+    # US mega-cap tech / "Magnificent 7"
+    "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "META", "AMZN", "TSLA",
+    # Other big tech / semis
+    "AVGO", "AMD", "INTC", "ORCL", "CRM", "ADBE", "QCOM", "TXN", "ARM", "ASML",
+    # AI / cloud / data infra
+    "PLTR", "SNOW", "CRWD", "NET", "DDOG", "MDB", "PANW", "ZS", "S",
+    # China ADRs (中概股 — 用户关注)
+    "BABA", "PDD", "JD", "BIDU", "NIO", "XPEV", "LI", "BILI", "TCOM", "TME",
+    # Crypto / Web3
+    "COIN", "MSTR", "MARA", "RIOT", "HOOD",
+    # Mega-cap finance / consumer benchmarks
+    "JPM", "BAC", "GS", "WMT", "COST", "DIS", "NFLX", "UBER", "ABNB", "SPOT",
+]

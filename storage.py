@@ -123,6 +123,61 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_visits_month ON page_visits(month)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_visits_week  ON page_visits(week)")
 
+        # ── Earnings calendar tables ───────────────────────────────────────
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS earnings_events (
+                id            TEXT PRIMARY KEY,
+                symbol        TEXT NOT NULL,
+                date          TEXT NOT NULL,
+                hour          TEXT,
+                eps_estimate  REAL,
+                eps_actual    REAL,
+                rev_estimate  REAL,
+                rev_actual    REAL,
+                quarter       INTEGER,
+                year          INTEGER,
+                fetched_at    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_earnings_date   ON earnings_events(date);
+            CREATE INDEX IF NOT EXISTS idx_earnings_symbol ON earnings_events(symbol);
+
+            CREATE TABLE IF NOT EXISTS ipo_events (
+                id            TEXT PRIMARY KEY,
+                symbol        TEXT,
+                name          TEXT NOT NULL,
+                date          TEXT NOT NULL,
+                exchange      TEXT,
+                price_range   TEXT,
+                shares        INTEGER,
+                total_value   REAL,
+                status        TEXT,
+                fetched_at    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ipo_date ON ipo_events(date);
+
+            CREATE TABLE IF NOT EXISTS stock_profiles (
+                symbol        TEXT PRIMARY KEY,
+                name          TEXT,
+                market_cap_m  REAL,
+                industry      TEXT,
+                exchange      TEXT,
+                logo          TEXT,
+                weburl        TEXT,
+                fetched_at    TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS macro_events (
+                id            TEXT PRIMARY KEY,
+                date          TEXT NOT NULL,
+                time          TEXT,
+                title         TEXT NOT NULL,
+                category      TEXT,
+                impact        TEXT,
+                notes         TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_macro_date ON macro_events(date);
+        """)
+
 
 def _content_hash(title: str) -> str:
     """Normalized title hash for cross-source deduplication."""
@@ -622,3 +677,217 @@ def get_stats() -> dict:
             "latest_tweet_at": latest_tweet[0] if latest_tweet else None,
             "latest_post_at": latest_post[0] if latest_post else None,
         }
+
+
+# ── Earnings calendar ──────────────────────────────────────────────────────
+
+def upsert_earnings(rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        for r in rows:
+            conn.execute(
+                """INSERT INTO earnings_events
+                   (id, symbol, date, hour, eps_estimate, eps_actual,
+                    rev_estimate, rev_actual, quarter, year, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       hour=excluded.hour,
+                       eps_estimate=excluded.eps_estimate,
+                       eps_actual=excluded.eps_actual,
+                       rev_estimate=excluded.rev_estimate,
+                       rev_actual=excluded.rev_actual,
+                       fetched_at=excluded.fetched_at""",
+                (
+                    r["id"], r["symbol"], r["date"], r.get("hour"),
+                    r.get("eps_estimate"), r.get("eps_actual"),
+                    r.get("rev_estimate"), r.get("rev_actual"),
+                    r.get("quarter"), r.get("year"), now,
+                ),
+            )
+    return len(rows)
+
+
+def upsert_ipos(rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        for r in rows:
+            conn.execute(
+                """INSERT INTO ipo_events
+                   (id, symbol, name, date, exchange, price_range, shares,
+                    total_value, status, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       price_range=excluded.price_range,
+                       shares=excluded.shares,
+                       total_value=excluded.total_value,
+                       status=excluded.status,
+                       fetched_at=excluded.fetched_at""",
+                (
+                    r["id"], r.get("symbol"), r["name"], r["date"],
+                    r.get("exchange"), r.get("price_range"), r.get("shares"),
+                    r.get("total_value"), r.get("status"), now,
+                ),
+            )
+    return len(rows)
+
+
+def upsert_profile(symbol: str, profile: dict):
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO stock_profiles
+               (symbol, name, market_cap_m, industry, exchange, logo, weburl, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(symbol) DO UPDATE SET
+                   name=excluded.name,
+                   market_cap_m=excluded.market_cap_m,
+                   industry=excluded.industry,
+                   exchange=excluded.exchange,
+                   logo=excluded.logo,
+                   weburl=excluded.weburl,
+                   fetched_at=excluded.fetched_at""",
+            (
+                symbol,
+                profile.get("name"),
+                profile.get("marketCapitalization"),
+                profile.get("finnhubIndustry"),
+                profile.get("exchange"),
+                profile.get("logo"),
+                profile.get("weburl"),
+                now,
+            ),
+        )
+
+
+def get_symbols_needing_profile(symbols: list[str], max_age_days: int = 30) -> list[str]:
+    """Return subset of symbols that have no cached profile or whose cache is stale."""
+    if not symbols:
+        return []
+    from datetime import timedelta
+    cutoff = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
+    with get_conn() as conn:
+        placeholders = ",".join("?" * len(symbols))
+        rows = conn.execute(
+            f"""SELECT symbol FROM stock_profiles
+                WHERE symbol IN ({placeholders}) AND fetched_at >= ?""",
+            (*symbols, cutoff),
+        ).fetchall()
+        fresh = {r["symbol"] for r in rows}
+    return [s for s in symbols if s not in fresh]
+
+
+def upsert_macro_events(rows: list[dict]) -> int:
+    """Replace-style upsert: identifies a row by (date, title)."""
+    if not rows:
+        return 0
+    import re
+    n = 0
+    with get_conn() as conn:
+        for r in rows:
+            slug = re.sub(r"[^a-z0-9]+", "-", r["title"].lower()).strip("-")
+            mid = f"macro::{slug}::{r['date']}"
+            conn.execute(
+                """INSERT INTO macro_events (id, date, time, title, category, impact, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       time=excluded.time,
+                       category=excluded.category,
+                       impact=excluded.impact,
+                       notes=excluded.notes""",
+                (
+                    mid, r["date"], r.get("time"), r["title"],
+                    r.get("category"), r.get("impact"), r.get("notes"),
+                ),
+            )
+            n += 1
+    return n
+
+
+def get_calendar_window(start: str, end: str, filters: dict | None = None) -> dict:
+    """Return {date: {earnings:[...], ipos:[...], macro:[...]}} for [start, end] inclusive.
+
+    filters keys (all optional):
+      - min_market_cap_m: int (default 10000)
+      - industries: list[str] | None (substring match against profile.industry)
+      - watchlist:  list[str] | None (always include these symbols)
+      - include_ipos:  bool (default True)
+      - include_macro: bool (default True)
+    """
+    filters = filters or {}
+    min_cap = filters.get("min_market_cap_m", 10000)
+    industries = [i.lower() for i in (filters.get("industries") or [])]
+    watchlist = set((filters.get("watchlist") or []))
+    include_ipos = filters.get("include_ipos", True)
+    include_macro = filters.get("include_macro", True)
+
+    out: dict[str, dict] = {}
+
+    def _bucket(d: str) -> dict:
+        return out.setdefault(d, {"earnings": [], "ipos": [], "macro": []})
+
+    with get_conn() as conn:
+        # Earnings — JOIN profiles, filter client-side for flexibility
+        rows = conn.execute(
+            """SELECT e.symbol, e.date, e.hour, e.eps_estimate, e.eps_actual,
+                      e.rev_estimate, e.rev_actual, e.quarter, e.year,
+                      p.name, p.market_cap_m, p.industry, p.logo, p.weburl
+               FROM earnings_events e
+               LEFT JOIN stock_profiles p USING(symbol)
+               WHERE e.date BETWEEN ? AND ?
+               ORDER BY e.date, COALESCE(p.market_cap_m, 0) DESC""",
+            (start, end),
+        ).fetchall()
+        for r in rows:
+            symbol = r["symbol"]
+            cap = r["market_cap_m"] or 0
+            industry = (r["industry"] or "").lower()
+            in_watchlist = symbol in watchlist
+            cap_ok = cap >= min_cap
+            ind_ok = industries and any(i in industry for i in industries)
+            if not (in_watchlist or cap_ok or ind_ok):
+                continue
+            _bucket(r["date"])["earnings"].append({
+                "symbol": symbol,
+                "name": r["name"] or symbol,
+                "hour": r["hour"],
+                "eps_estimate": r["eps_estimate"],
+                "eps_actual": r["eps_actual"],
+                "rev_estimate": r["rev_estimate"],
+                "rev_actual": r["rev_actual"],
+                "quarter": r["quarter"],
+                "year": r["year"],
+                "market_cap_m": cap,
+                "industry": r["industry"],
+                "logo": r["logo"],
+                "weburl": r["weburl"],
+                "is_watchlist": in_watchlist,
+            })
+
+        if include_ipos:
+            rows = conn.execute(
+                """SELECT symbol, name, date, exchange, price_range, shares,
+                          total_value, status
+                   FROM ipo_events
+                   WHERE date BETWEEN ? AND ?
+                   ORDER BY date, COALESCE(total_value, 0) DESC""",
+                (start, end),
+            ).fetchall()
+            for r in rows:
+                _bucket(r["date"])["ipos"].append(dict(r))
+
+        if include_macro:
+            rows = conn.execute(
+                """SELECT date, time, title, category, impact, notes
+                   FROM macro_events
+                   WHERE date BETWEEN ? AND ?
+                   ORDER BY date, time""",
+                (start, end),
+            ).fetchall()
+            for r in rows:
+                _bucket(r["date"])["macro"].append(dict(r))
+
+    return out

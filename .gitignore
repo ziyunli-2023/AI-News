@@ -35,7 +35,8 @@ build/
 .idea/
 
 # Docker data
-data/
+data/*
+!data/us_macro_events.json
 backups/
 ssl/
 nginx/logs/

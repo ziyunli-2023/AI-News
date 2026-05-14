@@ -573,6 +573,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <button class="nav-btn" onclick="setCategory('ai',this)"><span data-i18n="navAI">🤖 AI</span><span class="cnt" id="cnt-ai">0</span></button>
     <button class="nav-btn" onclick="setCategory('papers',this)"><span data-i18n="navPapers">📄 论文</span><span class="cnt" id="cnt-papers">0</span></button>
     <button class="nav-btn" onclick="setCategory('web3',this)"><span data-i18n="navWeb3">🔗 Web3</span><span class="cnt" id="cnt-web3">0</span></button>
+    <a class="nav-btn" href="/earnings" style="text-decoration:none;"><span data-i18n="navEarnings">📅 财报日历</span></a>
 
     <div class="nav-section" data-i18n="secFilter" style="margin-top:6px;">筛选</div>
     <button class="nav-btn" onclick="setFilter('posts',this)"><span data-i18n="navPosts">📰 博客文章</span><span class="cnt" id="cnt-posts">0</span></button>
@@ -682,6 +683,7 @@ const STRINGS = {
     featured:'精选', polymarketTag:'🎯 预测市场', bnavPolymarket:'预测',
     bnavAll:'全部', bnavPapers:'论文', bnavVenture:'创投', bnavStocks:'美股', bnavMore:'更多',
     bnavTrump:'特朗普', bnavGeo:'地缘',
+    navEarnings:'📅 财报日历',
   },
   en: {
     navAll:'🌐 All', navAI:'🤖 AI', navPapers:'📄 Papers', navWeb3:'🔗 Web3',
@@ -706,6 +708,7 @@ const STRINGS = {
     featured:'Featured', polymarketTag:'🎯 Prediction', bnavPolymarket:'Predict',
     bnavAll:'All', bnavPapers:'Papers', bnavVenture:'VC', bnavStocks:'Stocks', bnavMore:'More',
     bnavTrump:'Trump', bnavGeo:'Geo',
+    navEarnings:'📅 Earnings Calendar',
   }
 };
 let lang = localStorage.getItem('lang') || 'zh';
@@ -1390,3 +1393,572 @@ loadNews();
 def dashboard():
     storage.record_visit()
     return HTMLResponse(content=DASHBOARD_HTML)
+
+
+# ── Earnings calendar sub-page ─────────────────────────────────────────────
+
+@app.get("/api/earnings-calendar")
+def api_earnings_calendar(
+    start: str,
+    end: str,
+    min_cap_m: int = None,
+    industries: str = None,
+    watchlist: str = None,
+    include_ipos: int = 1,
+    include_macro: int = 1,
+):
+    """Return {date: {earnings, ipos, macro}} for [start, end] (YYYY-MM-DD)."""
+    if min_cap_m is None:
+        min_cap_m = config.EARNINGS_DEFAULT_MIN_CAP_M
+    industries_list = (
+        [s.strip() for s in industries.split(",") if s.strip()]
+        if industries is not None else config.EARNINGS_INDUSTRIES_DEFAULT
+    )
+    watchlist_list = (
+        [s.strip().upper() for s in watchlist.split(",") if s.strip()]
+        if watchlist is not None else config.EARNINGS_WATCHLIST
+    )
+    return storage.get_calendar_window(
+        start, end,
+        {
+            "min_market_cap_m": min_cap_m,
+            "industries": industries_list,
+            "watchlist": watchlist_list,
+            "include_ipos": bool(include_ipos),
+            "include_macro": bool(include_macro),
+        },
+    )
+
+
+EARNINGS_HTML = r"""<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>财报日历 · YunFlow</title>
+<style>
+:root {
+  --bg: #f5f6f8; --surface: #ffffff; --surface2: #f0f1f4;
+  --border: #e2e4e9; --text: #111318; --text2: #4b5160; --muted: #8b8f99;
+  --accent: #2563eb; --accent-bg: #eff4ff;
+  --earn: #2563eb; --earn-bg: #eff4ff;
+  --ipo: #7c3aed; --ipo-bg: #f3efff;
+  --macro-hi: #dc2626; --macro-hi-bg: #fef2f2;
+  --macro-md: #ea580c; --macro-md-bg: #fff4eb;
+  --macro-lo: #6b7280; --macro-lo-bg: #f3f4f6;
+  --today: #fbbf24;
+}
+[data-theme="dark"] {
+  --bg: #0f1117; --surface: #181c25; --surface2: #1f2430;
+  --border: #2a2f3c; --text: #e8eaf0; --text2: #b5b9c6; --muted: #8084a0;
+  --accent: #5b8def; --accent-bg: #1c2740;
+  --earn-bg: #16213d; --ipo-bg: #271940; --macro-hi-bg: #3a0a0a;
+  --macro-md-bg: #3a1f0a; --macro-lo-bg: #232733;
+}
+@media (prefers-color-scheme: dark) {
+  [data-theme="auto"] {
+    --bg: #0f1117; --surface: #181c25; --surface2: #1f2430;
+    --border: #2a2f3c; --text: #e8eaf0; --text2: #b5b9c6; --muted: #8084a0;
+    --accent: #5b8def; --accent-bg: #1c2740;
+    --earn-bg: #16213d; --ipo-bg: #271940; --macro-hi-bg: #3a0a0a;
+    --macro-md-bg: #3a1f0a; --macro-lo-bg: #232733;
+  }
+}
+* { box-sizing: border-box; }
+body { margin:0; font:14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif; color:var(--text); background:var(--bg); }
+.page { max-width: 1400px; margin: 0 auto; padding: 16px; }
+
+.topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.back-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text2); text-decoration: none; font-size: 13px; }
+.back-btn:hover { color: var(--accent); border-color: var(--accent); }
+h1.title { margin: 0; font-size: 20px; font-weight: 700; flex: 1; }
+.theme-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text2); padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+
+.cal-nav { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; flex-wrap: wrap; }
+.cal-nav button { background: none; border: 1px solid var(--border); color: var(--text); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.cal-nav button:hover { border-color: var(--accent); color: var(--accent); }
+.cal-nav .month-label { font-size: 18px; font-weight: 600; min-width: 130px; text-align: center; }
+.cal-nav .spacer { flex: 1; }
+
+.filters { display: flex; gap: 14px; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; flex-wrap: wrap; font-size: 13px; }
+.filters label { display: flex; align-items: center; gap: 6px; color: var(--text2); }
+.filters .cap-val { font-weight: 600; color: var(--accent); min-width: 60px; }
+.filters .toggle { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+
+.cal-grid { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.cal-week-header { display: grid; grid-template-columns: repeat(7, 1fr); background: var(--surface2); border-bottom: 1px solid var(--border); }
+.cal-week-header > div { padding: 8px 12px; font-size: 12px; font-weight: 600; color: var(--text2); text-align: center; }
+.cal-week-header > div.weekend { color: var(--muted); }
+.cal-month { display: grid; grid-template-columns: repeat(7, 1fr); }
+.cal-day { min-height: 110px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 6px 8px; cursor: pointer; transition: background .12s; display: flex; flex-direction: column; gap: 4px; }
+.cal-day:hover { background: var(--surface2); }
+.cal-day.other-month { background: var(--surface2); opacity: 0.45; }
+.cal-day.today .day-num { background: var(--today); color: #1a1a1a; border-radius: 999px; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
+.cal-day .day-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+.cal-day .day-num { font-weight: 600; color: var(--text); }
+.cal-day.weekend .day-num { color: var(--muted); }
+.cal-day .day-count { font-size: 10px; color: var(--muted); }
+.cal-day .day-events { display: flex; flex-direction: column; gap: 2px; min-height: 0; }
+.evt { font-size: 11px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+.evt-earn { background: var(--earn-bg); color: var(--earn); }
+.evt-ipo { background: var(--ipo-bg); color: var(--ipo); }
+.evt-macro-high { background: var(--macro-hi-bg); color: var(--macro-hi); font-weight: 600; }
+.evt-macro-medium { background: var(--macro-md-bg); color: var(--macro-md); }
+.evt-macro-low { background: var(--macro-lo-bg); color: var(--macro-lo); }
+.evt-more { font-size: 10px; color: var(--muted); padding: 1px 6px; }
+
+.drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 50; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.drawer-mask.open { opacity: 1; pointer-events: auto; }
+.drawer { position: fixed; right: 0; top: 0; bottom: 0; width: 420px; max-width: 92vw; background: var(--surface); border-left: 1px solid var(--border); z-index: 51; transform: translateX(100%); transition: transform .25s; overflow-y: auto; padding: 18px 20px; }
+.drawer.open { transform: translateX(0); }
+.drawer-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.drawer-head .d-date { font-size: 18px; font-weight: 700; }
+.drawer-head .d-close { background: none; border: none; color: var(--text2); font-size: 22px; cursor: pointer; padding: 2px 8px; }
+.drawer-section { margin-bottom: 18px; }
+.drawer-section h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text2); font-weight: 600; }
+.drawer-row { padding: 10px 12px; background: var(--surface2); border-radius: 8px; margin-bottom: 6px; }
+.drawer-row .row-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.drawer-row .row-title { font-weight: 600; font-size: 14px; }
+.drawer-row .row-sub { font-size: 12px; color: var(--text2); margin-top: 4px; line-height: 1.5; }
+.drawer-row a { color: var(--accent); text-decoration: none; font-size: 12px; }
+.drawer-row a:hover { text-decoration: underline; }
+.drawer-row .row-name { color: var(--muted); font-weight: 400; }
+.drawer-row .logo { width: 18px; height: 18px; border-radius: 4px; vertical-align: middle; margin-right: 6px; }
+.pill { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+.pill-bmo { background: #fef3c7; color: #92400e; }
+.pill-amc { background: #dbeafe; color: #1e40af; }
+.pill-dmh { background: #e9d5ff; color: #6b21a8; }
+.pill-high { background: var(--macro-hi-bg); color: var(--macro-hi); }
+.pill-medium { background: var(--macro-md-bg); color: var(--macro-md); }
+.pill-low { background: var(--macro-lo-bg); color: var(--macro-lo); }
+[data-theme="dark"] .pill-bmo { background: #3a2e0a; color: #fbbf24; }
+[data-theme="dark"] .pill-amc { background: #1c2740; color: #93c5fd; }
+[data-theme="dark"] .pill-dmh { background: #2a1745; color: #d8b4fe; }
+
+.empty { text-align: center; color: var(--muted); padding: 30px 0; font-size: 13px; }
+
+@media (max-width: 720px) {
+  .cal-day { min-height: 70px; padding: 4px; }
+  .cal-day .day-events { gap: 1px; }
+  .evt { font-size: 10px; padding: 1px 4px; }
+  .drawer { width: 100%; }
+  .cal-nav .month-label { font-size: 15px; min-width: 110px; }
+  h1.title { font-size: 17px; }
+}
+</style>
+</head>
+<body data-theme="auto">
+
+<div class="page">
+  <div class="topbar">
+    <a class="back-btn" href="/">← <span id="t-back">返回主页</span></a>
+    <h1 class="title" id="t-title">📅 财报日历 · Earnings Calendar</h1>
+    <button class="theme-btn" id="langBtn" onclick="toggleLang()">EN</button>
+    <button class="theme-btn" id="themeBtn" onclick="toggleTheme()">☀</button>
+  </div>
+
+  <div class="cal-nav">
+    <button onclick="navMonth(-1)">← <span id="t-prev">上月</span></button>
+    <div class="month-label" id="monthLabel">—</div>
+    <button onclick="navMonth(1)"><span id="t-next">下月</span> →</button>
+    <button onclick="goToday()" id="t-today">今天</button>
+    <div class="spacer"></div>
+  </div>
+
+  <div class="filters">
+    <label>
+      <span id="t-cap">最低市值</span>:
+      <input type="range" id="capRange" min="0" max="6" step="1" value="2" oninput="onCapChange()">
+      <span class="cap-val" id="capVal">$10B</span>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="incIpos" checked onchange="reload()">
+      <span id="t-ipos">含 IPO</span>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="incMacro" checked onchange="reload()">
+      <span id="t-macro">含宏观事件</span>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="onlyWatch" onchange="onWatchToggle()">
+      <span id="t-onlywatch">仅热点</span>
+    </label>
+    <span style="font-size:12px;color:var(--muted)">
+      <span class="legend-dot" style="background:var(--earn)"></span><span id="t-legendE">财报</span>
+      <span class="legend-dot" style="background:var(--ipo);margin-left:10px"></span><span id="t-legendI">IPO</span>
+      <span class="legend-dot" style="background:var(--macro-hi);margin-left:10px"></span><span id="t-legendM">重要数据</span>
+    </span>
+  </div>
+
+  <div class="cal-grid">
+    <div class="cal-week-header" id="weekHeader"></div>
+    <div class="cal-month" id="calMonth"></div>
+  </div>
+</div>
+
+<div class="drawer-mask" id="drawerMask" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div class="d-date" id="drawerDate">—</div>
+    <button class="d-close" onclick="closeDrawer()">×</button>
+  </div>
+  <div id="drawerBody"></div>
+</div>
+
+<script>
+const L = {
+  zh: {
+    back:'返回主页', title:'📅 财报日历 · Earnings Calendar', prev:'上月', next:'下月', today:'今天',
+    cap:'最低市值', ipos:'含 IPO', macro:'含宏观事件', onlywatch:'仅热点',
+    legendE:'财报', legendI:'IPO', legendM:'重要数据',
+    weekdays:['周一','周二','周三','周四','周五','周六','周日'],
+    months:['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'],
+    earnings:'财报', ipo:'IPO', macroSec:'美国宏观事件',
+    bmo:'盘前', amc:'盘后', dmh:'盘中',
+    eps:'EPS 预期', rev:'营收预期', impact:'影响', priceRange:'定价', shares:'股数', exchange:'交易所',
+    none:'当天无事件', loading:'加载中…', more:'更多',
+    high:'高影响', medium:'中影响', low:'低影响',
+    expected:'预期', priced:'已定价', withdrawn:'已撤回', filed:'已申报',
+    capLabels:['不限','$1B+','$10B+','$50B+','$200B+','$500B+','$1T+'],
+  },
+  en: {
+    back:'Back to home', title:'📅 Earnings Calendar', prev:'Prev', next:'Next', today:'Today',
+    cap:'Min Mkt Cap', ipos:'Include IPOs', macro:'Include Macro', onlywatch:'Watchlist Only',
+    legendE:'Earnings', legendI:'IPO', legendM:'Macro',
+    weekdays:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],
+    months:['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+    earnings:'Earnings', ipo:'IPO', macroSec:'US Macro Events',
+    bmo:'BMO', amc:'AMC', dmh:'DMH',
+    eps:'EPS Est', rev:'Rev Est', impact:'Impact', priceRange:'Price', shares:'Shares', exchange:'Exchange',
+    none:'No events today', loading:'Loading…', more:'more',
+    high:'High', medium:'Med', low:'Low',
+    expected:'Expected', priced:'Priced', withdrawn:'Withdrawn', filed:'Filed',
+    capLabels:['Any','$1B+','$10B+','$50B+','$200B+','$500B+','$1T+'],
+  }
+};
+const CAP_VALUES = [0, 1000, 10000, 50000, 200000, 500000, 1000000];
+
+let lang = localStorage.getItem('lang') || 'zh';
+let theme = localStorage.getItem('theme') || 'auto';
+let cursor = new Date(); cursor.setDate(1);
+let data = {};
+let onlyWatch = false;
+
+function $(id) { return document.getElementById(id); }
+function el(tag, opts) {
+  const e = document.createElement(tag);
+  if (!opts) return e;
+  if (opts.cls) e.className = opts.cls;
+  if (opts.text != null) e.textContent = opts.text;
+  if (opts.title) e.title = opts.title;
+  if (opts.href) e.href = opts.href;
+  if (opts.target) e.target = opts.target;
+  if (opts.rel) e.rel = opts.rel;
+  if (opts.style) e.setAttribute('style', opts.style);
+  if (opts.onclick) e.onclick = opts.onclick;
+  return e;
+}
+
+function applyTheme() {
+  document.body.setAttribute('data-theme', theme);
+  $('themeBtn').textContent = theme==='dark' ? '☾' : (theme==='light' ? '☀' : '◐');
+}
+function toggleTheme() {
+  theme = theme==='auto' ? 'light' : (theme==='light' ? 'dark' : 'auto');
+  localStorage.setItem('theme', theme); applyTheme();
+}
+function toggleLang() {
+  lang = lang==='zh' ? 'en' : 'zh';
+  localStorage.setItem('lang', lang); applyLang(); render();
+}
+function applyLang() {
+  const l = L[lang];
+  document.documentElement.lang = lang;
+  $('t-back').textContent = l.back;
+  $('t-title').textContent = l.title;
+  $('t-prev').textContent = l.prev;
+  $('t-next').textContent = l.next;
+  $('t-today').textContent = l.today;
+  $('t-cap').textContent = l.cap;
+  $('t-ipos').textContent = l.ipos;
+  $('t-macro').textContent = l.macro;
+  $('t-onlywatch').textContent = l.onlywatch;
+  $('t-legendE').textContent = l.legendE;
+  $('t-legendI').textContent = l.legendI;
+  $('t-legendM').textContent = l.legendM;
+  $('langBtn').textContent = lang==='zh' ? 'EN' : '中';
+  const wh = $('weekHeader');
+  wh.textContent = '';
+  l.weekdays.forEach((w, i) => {
+    const d = el('div', { text: w });
+    if (i >= 5) d.classList.add('weekend');
+    wh.appendChild(d);
+  });
+  updateCapLabel();
+}
+function updateCapLabel() {
+  const idx = parseInt($('capRange').value);
+  $('capVal').textContent = L[lang].capLabels[idx];
+}
+function onCapChange() { updateCapLabel(); reload(); }
+function onWatchToggle() { onlyWatch = $('onlyWatch').checked; reload(); }
+
+function ymd(d) {
+  const y = d.getFullYear();
+  const m = (d.getMonth()+1).toString().padStart(2,'0');
+  const day = d.getDate().toString().padStart(2,'0');
+  return y + '-' + m + '-' + day;
+}
+function navMonth(delta) {
+  cursor.setMonth(cursor.getMonth() + delta);
+  reload();
+}
+function goToday() {
+  cursor = new Date(); cursor.setDate(1);
+  reload();
+}
+
+async function reload() {
+  const l = L[lang];
+  $('monthLabel').textContent = cursor.getFullYear() + ' ' + l.months[cursor.getMonth()];
+  const gridStart = new Date(cursor); gridStart.setDate(1);
+  const firstWeekday = (gridStart.getDay() + 6) % 7;
+  gridStart.setDate(gridStart.getDate() - firstWeekday);
+  const gridEnd = new Date(gridStart); gridEnd.setDate(gridStart.getDate() + 41);
+
+  const capIdx = parseInt($('capRange').value);
+  let minCap = CAP_VALUES[capIdx];
+  if (onlyWatch) minCap = 99999999;
+  const params = new URLSearchParams({
+    start: ymd(gridStart),
+    end:   ymd(gridEnd),
+    min_cap_m: String(minCap),
+    include_ipos: $('incIpos').checked ? '1' : '0',
+    include_macro: $('incMacro').checked ? '1' : '0',
+  });
+  if (onlyWatch) params.set('industries', '');
+  try {
+    const res = await fetch('/api/earnings-calendar?' + params.toString());
+    data = await res.json();
+  } catch (e) {
+    data = {};
+  }
+  render();
+}
+
+function makeEvt(text, cls, tooltip) {
+  return el('div', { cls: 'evt ' + cls, text: text, title: tooltip || text });
+}
+
+function render() {
+  const l = L[lang];
+  const month = cursor.getMonth();
+  const gridStart = new Date(cursor); gridStart.setDate(1);
+  const firstWeekday = (gridStart.getDay() + 6) % 7;
+  gridStart.setDate(gridStart.getDate() - firstWeekday);
+  const today = ymd(new Date());
+
+  const cal = $('calMonth');
+  cal.textContent = '';
+
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart); d.setDate(gridStart.getDate() + i);
+    const key = ymd(d);
+    const inMonth = d.getMonth() === month;
+    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+
+    const cell = el('div');
+    let cls = 'cal-day';
+    if (!inMonth) cls += ' other-month';
+    if (isWeekend) cls += ' weekend';
+    if (key === today) cls += ' today';
+    cell.className = cls;
+    cell.onclick = () => openDrawer(key);
+
+    const head = el('div', { cls: 'day-head' });
+    head.appendChild(el('span', { cls: 'day-num', text: String(d.getDate()) }));
+    cell.appendChild(head);
+
+    const ev = data[key] || { earnings: [], ipos: [], macro: [] };
+    const total = ev.earnings.length + ev.ipos.length + ev.macro.length;
+    if (total > 0) {
+      head.appendChild(el('span', { cls: 'day-count', text: String(total) }));
+    }
+
+    const list = el('div', { cls: 'day-events' });
+
+    ev.macro.slice(0, 2).forEach(m => {
+      const trimmed = m.title.length > 22 ? m.title.slice(0, 22) + '…' : m.title;
+      list.appendChild(makeEvt('🏛 ' + trimmed, 'evt-macro-' + (m.impact || 'low'), m.title));
+    });
+
+    ev.earnings.slice(0, 3).forEach(e => {
+      const hr = e.hour === 'bmo' ? (lang === 'zh' ? '·盘前' : ' BMO')
+              : e.hour === 'amc' ? (lang === 'zh' ? '·盘后' : ' AMC') : '';
+      list.appendChild(makeEvt(e.symbol + hr, 'evt-earn', (e.name || e.symbol) + ' (' + (e.hour || '') + ')'));
+    });
+
+    ev.ipos.slice(0, 2).forEach(i => {
+      const label = (i.symbol || i.name).slice(0, 12);
+      list.appendChild(makeEvt('🚀 ' + label, 'evt-ipo', i.name));
+    });
+
+    const shown = Math.min(2, ev.macro.length) + Math.min(3, ev.earnings.length) + Math.min(2, ev.ipos.length);
+    if (total > shown) {
+      list.appendChild(el('div', { cls: 'evt-more', text: '+ ' + (total - shown) + ' ' + l.more }));
+    }
+    cell.appendChild(list);
+    cal.appendChild(cell);
+  }
+}
+
+function fmtRev(v) {
+  if (v == null || isNaN(v)) return '—';
+  const n = Number(v);
+  if (n >= 1e9) return '$' + (n/1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return '$' + (n/1e6).toFixed(0) + 'M';
+  return '$' + n.toFixed(0);
+}
+function fmtCap(m) {
+  if (!m) return '';
+  if (m >= 1e6) return '$' + (m/1e6).toFixed(1) + 'T';
+  if (m >= 1000) return '$' + (m/1000).toFixed(0) + 'B';
+  return '$' + m.toFixed(0) + 'M';
+}
+
+function buildEarningsRow(e) {
+  const l = L[lang];
+  const row = el('div', { cls: 'drawer-row' });
+  const head = el('div', { cls: 'row-head' });
+  const title = el('div', { cls: 'row-title' });
+  if (e.logo) {
+    const img = el('img', { cls: 'logo' });
+    img.src = e.logo;
+    img.onerror = () => { img.style.display = 'none'; };
+    title.appendChild(img);
+  }
+  const link = el('a', {
+    href: e.weburl || ('https://finance.yahoo.com/quote/' + e.symbol),
+    target: '_blank', rel: 'noopener', text: e.symbol,
+  });
+  title.appendChild(link);
+  if (e.name) {
+    title.appendChild(el('span', { cls: 'row-name', text: ' ' + e.name }));
+  }
+  head.appendChild(title);
+  if (e.hour) {
+    head.appendChild(el('span', { cls: 'pill pill-' + e.hour, text: l[e.hour] || e.hour.toUpperCase() }));
+  }
+  row.appendChild(head);
+
+  const subParts = [];
+  if (e.eps_estimate != null) subParts.push(l.eps + ': $' + Number(e.eps_estimate).toFixed(2));
+  if (e.rev_estimate != null) subParts.push(l.rev + ': ' + fmtRev(e.rev_estimate));
+  if (e.market_cap_m) subParts.push(fmtCap(e.market_cap_m));
+  let subText = subParts.join(' · ');
+  if (e.industry) subText += (subText ? '\n' : '') + e.industry;
+  if (subText) {
+    const sub = el('div', { cls: 'row-sub' });
+    sub.style.whiteSpace = 'pre-line';
+    sub.textContent = subText;
+    row.appendChild(sub);
+  }
+  return row;
+}
+
+function buildIpoRow(i) {
+  const l = L[lang];
+  const row = el('div', { cls: 'drawer-row' });
+  const head = el('div', { cls: 'row-head' });
+  const title = el('div', { cls: 'row-title', text: i.name });
+  if (i.symbol) {
+    title.appendChild(el('span', { cls: 'row-name', text: ' (' + i.symbol + ')' }));
+  }
+  head.appendChild(title);
+  if (i.status) {
+    head.appendChild(el('span', { cls: 'pill pill-medium', text: l[i.status] || i.status }));
+  }
+  row.appendChild(head);
+
+  const subParts = [];
+  if (i.exchange) subParts.push(l.exchange + ': ' + i.exchange);
+  if (i.price_range) subParts.push(l.priceRange + ': $' + i.price_range);
+  if (i.shares) subParts.push(l.shares + ': ' + Number(i.shares).toLocaleString());
+  if (subParts.length) {
+    row.appendChild(el('div', { cls: 'row-sub', text: subParts.join(' · ') }));
+  }
+  return row;
+}
+
+function buildMacroRow(m) {
+  const l = L[lang];
+  const row = el('div', { cls: 'drawer-row' });
+  const head = el('div', { cls: 'row-head' });
+  head.appendChild(el('div', { cls: 'row-title', text: m.title }));
+  if (m.impact) {
+    head.appendChild(el('span', { cls: 'pill pill-' + m.impact, text: l[m.impact] || m.impact }));
+  }
+  row.appendChild(head);
+
+  const subParts = [];
+  if (m.time) subParts.push('⏰ ' + m.time);
+  if (m.category) subParts.push(m.category.toUpperCase());
+  let subText = subParts.join(' · ');
+  if (m.notes) subText += (subText ? '\n' : '') + m.notes;
+  if (subText) {
+    const sub = el('div', { cls: 'row-sub' });
+    sub.style.whiteSpace = 'pre-line';
+    sub.textContent = subText;
+    row.appendChild(sub);
+  }
+  return row;
+}
+
+function buildSection(headerText, items, builder) {
+  if (!items.length) return null;
+  const sec = el('div', { cls: 'drawer-section' });
+  sec.appendChild(el('h3', { text: headerText + ' (' + items.length + ')' }));
+  items.forEach(it => sec.appendChild(builder(it)));
+  return sec;
+}
+
+function openDrawer(date) {
+  const l = L[lang];
+  const ev = data[date] || { earnings: [], ipos: [], macro: [] };
+  $('drawerDate').textContent = date;
+  const body = $('drawerBody');
+  body.textContent = '';
+
+  if (ev.earnings.length + ev.ipos.length + ev.macro.length === 0) {
+    body.appendChild(el('div', { cls: 'empty', text: l.none }));
+  } else {
+    const macroSec = buildSection('🏛 ' + l.macroSec, ev.macro, buildMacroRow);
+    if (macroSec) body.appendChild(macroSec);
+    const earnSec = buildSection('📊 ' + l.earnings, ev.earnings, buildEarningsRow);
+    if (earnSec) body.appendChild(earnSec);
+    const ipoSec = buildSection('🚀 ' + l.ipo, ev.ipos, buildIpoRow);
+    if (ipoSec) body.appendChild(ipoSec);
+  }
+
+  $('drawerMask').classList.add('open');
+  $('drawer').classList.add('open');
+}
+function closeDrawer() {
+  $('drawerMask').classList.remove('open');
+  $('drawer').classList.remove('open');
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+applyTheme();
+applyLang();
+reload();
+</script>
+</body>
+</html>"""
+
+
+@app.get("/earnings", response_class=HTMLResponse)
+def earnings_page():
+    storage.record_visit()
+    return HTMLResponse(content=EARNINGS_HTML)
