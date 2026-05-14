@@ -4,10 +4,10 @@
   "_impact": "high | medium | low",
   "_keywords_note": "用于在 RSS/blog_posts 里搜相关资讯。混中英文以匹配 YunFlow 现有的中英文新闻源。",
   "keywords_by_category": {
-    "fomc":   ["FOMC", "Federal Reserve", "Fed rate", "rate decision", "rate cut", "rate hike", "interest rate", "Powell", "dot plot", "美联储", "加息", "降息", "利率", "鲍威尔"],
-    "cpi":    ["CPI", "inflation", "consumer price", "通胀", "物价", "通货膨胀", "CPI 数据"],
+    "fomc":   ["FOMC", "Fed", "Federal Reserve", "rate decision", "rate cut", "rate hike", "interest rate", "Powell", "dot plot", "美联储", "加息", "降息", "利率", "鲍威尔"],
+    "cpi":    ["CPI", "inflation", "consumer price", "disinflation", "通胀", "通货膨胀", "CPI 数据"],
     "pce":    ["PCE", "personal consumption", "core inflation", "Fed preferred inflation", "PCE 物价", "核心通胀"],
-    "jobs":   ["nonfarm payroll", "NFP", "jobs report", "unemployment rate", "labor market", "non-farm", "非农", "就业", "失业率", "就业报告"],
+    "jobs":   ["nonfarm payroll", "non-farm payroll", "NFP", "jobs report", "unemployment rate", "labor market", "payrolls", "非农", "就业报告", "失业率"],
     "ppi":    ["PPI", "producer price", "wholesale inflation", "生产者物价", "PPI 数据"],
     "gdp":    ["GDP", "gross domestic product", "economic growth", "国内生产总值", "经济增长", "GDP 增速"],
     "retail": ["retail sales", "consumer spending", "零售销售", "消费支出"]

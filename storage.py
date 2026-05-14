@@ -542,34 +542,69 @@ def get_top_posts(hours: int = 48, limit: int = 10) -> list[dict]:
 def search_posts_any_keyword(keywords: list[str], limit: int = 10, days: int = 60) -> list[dict]:
     """Return blog_posts whose title OR summary matches ANY of the keywords.
 
-    Used by the earnings-calendar event-news lookup. Newest first, deduplicated by id.
-    Skips empty/very-short keywords to avoid pathological LIKE matches.
+    Two-stage matcher:
+      1. SQL LIKE pre-filters candidates by date range.
+      2. Python regex post-filters with WORD-BOUNDARY for short ASCII tokens
+         (≤4 chars, e.g. PPI/CPI/GDP/Fed/NVDA), so 'PPI' no longer matches
+         the 'ppi' substring inside 'shipping' / 'mapping'. Longer tokens
+         and Chinese words use plain substring matching.
     """
-    keywords = [k.strip() for k in (keywords or []) if k and len(k.strip()) >= 2]
-    if not keywords:
+    import re
+    # Clean + dedupe (case-insensitive)
+    cleaned: list[str] = []
+    seen_low: set[str] = set()
+    for k in (keywords or []):
+        k = (k or "").strip()
+        if not k or len(k) < 2:
+            continue
+        kl = k.lower()
+        if kl in seen_low:
+            continue
+        seen_low.add(kl)
+        cleaned.append(k)
+    if not cleaned:
         return []
+
+    # Build the strict matcher
+    pat_parts: list[str] = []
+    for k in cleaned:
+        is_ascii = all(ord(c) < 128 for c in k)
+        if is_ascii and len(k) <= 4:
+            pat_parts.append(r"\b" + re.escape(k) + r"\b")
+        else:
+            pat_parts.append(re.escape(k))
+    matcher = re.compile("|".join(pat_parts), re.IGNORECASE)
+
+    # SQL pre-filter (permissive — exact filtering happens in Python)
+    where_parts = []
+    params: list = []
+    for k in cleaned:
+        like = f"%{k}%"
+        where_parts.append("(title LIKE ? OR summary LIKE ?)")
+        params.extend([like, like])
     from datetime import timedelta
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    where = " OR ".join(["title LIKE ? OR summary LIKE ?"] * len(keywords))
-    params: list = []
-    for k in keywords:
-        like = f"%{k}%"
-        params.extend([like, like])
     params.append(cutoff)
-    params.append(limit)
     sql = f"""SELECT * FROM blog_posts
-              WHERE ({where}) AND COALESCE(published, fetched_at) >= ?
+              WHERE ({' OR '.join(where_parts)})
+                AND COALESCE(published, fetched_at) >= ?
               ORDER BY COALESCE(published, fetched_at) DESC
-              LIMIT ?"""
+              LIMIT 300"""
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
-    seen, out = set(), []
+
+    out: list[dict] = []
+    seen: set[str] = set()
     for r in rows:
-        d = dict(r)
-        if d["id"] in seen:
+        if r["id"] in seen:
             continue
-        seen.add(d["id"])
-        out.append(d)
+        text = (r["title"] or "") + "\n" + (r["summary"] or "")
+        if not matcher.search(text):
+            continue
+        seen.add(r["id"])
+        out.append(dict(r))
+        if len(out) >= limit:
+            break
     return out
 
 

@@ -2162,11 +2162,6 @@ def api_event_news(
 
     elif type == "macro":
         keywords = list(_macro_keywords_map().get((category or "").lower(), []))
-        if title:
-            # Use title's first significant word too (e.g. "FOMC", "CPI")
-            first = title.split()[0] if title else ""
-            if first and len(first) >= 2 and first not in keywords:
-                keywords.append(first)
         local = storage.search_posts_any_keyword(keywords, limit=limit, days=30)
         items = [_normalize_post(p) for p in local]
 
