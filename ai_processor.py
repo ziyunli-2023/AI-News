@@ -1,5 +1,7 @@
 """AI processor — translation (EN→ZH) and digest summarization via DeepSeek API."""
 
+from __future__ import annotations
+
 import json
 import logging
 
@@ -28,6 +30,15 @@ def _extract_json_array(raw: str):
     end = raw.rfind("]")
     if start == -1 or end == -1:
         raise ValueError("No JSON array in response")
+    return json.loads(raw[start:end + 1])
+
+
+def _extract_json_object(raw: str):
+    raw = (raw or "").strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError("No JSON object in response")
     return json.loads(raw[start:end + 1])
 
 
@@ -391,3 +402,155 @@ Return strictly as a JSON array, no extra text:
     except Exception as e:
         logger.error("generate_digest_summary failed: %s", e)
         return []
+
+
+def generate_ai_rotation_report(snapshot: dict, news_items: list[dict], lang: str = "zh") -> dict:
+    """Generate an AI supply-chain sector rotation report from market facts + news."""
+    if not config.DEEPSEEK_API_KEY:
+        return {"error": "DEEPSEEK_API_KEY not configured", "sections": []}
+
+    layers = []
+    for layer in snapshot.get("layers", [])[:12]:
+        leaders = ", ".join(
+            f"{s.get('symbol')} {float(s.get('day_pct') or 0):+.2f}%"
+            for s in (layer.get("leaders") or [])[:3]
+        )
+        laggards = ", ".join(
+            f"{s.get('symbol')} {float(s.get('day_pct') or 0):+.2f}%"
+            for s in (layer.get("laggards") or [])[:2]
+        )
+        layers.append(
+            f"- {layer.get('name')} ({layer.get('id')}): "
+            f"1D {float(layer.get('day_pct') or 0):+.2f}%, "
+            f"5D {float(layer.get('five_day_pct') or 0):+.2f}%, "
+            f"20D {float(layer.get('twenty_day_pct') or 0):+.2f}%, "
+            f"relNasdaq {float(layer.get('relative_nasdaq_5d') or 0):+.2f}%, "
+            f"breadth {int(layer.get('breadth_pct') or 0)}%, "
+            f"leaders [{leaders}], laggards [{laggards}]"
+        )
+
+    news_lines = []
+    for i, p in enumerate(news_items[:30]):
+        title = p.get("title") if lang == "en" else (p.get("title_zh") or p.get("title", ""))
+        news_lines.append(f"{i+1}. [{p.get('category','')}/{p.get('source','')}] {title}")
+
+    if lang == "en":
+        prompt = f"""You are a market strategist analyzing AI supply-chain sector rotation.
+
+Market snapshot:
+NASDAQ: 1D {snapshot.get('benchmark', {}).get('day_pct')}%, 5D {snapshot.get('benchmark', {}).get('five_day_pct')}%, 20D {snapshot.get('benchmark', {}).get('twenty_day_pct')}%
+Layers:
+{chr(10).join(layers)}
+
+Recent AI/US stock news:
+{chr(10).join(news_lines) or "No local news."}
+
+Classify each layer into exactly one status:
+- preheating: early relative strength or breadth improving, not crowded yet
+- rotating: active leadership with broad participation
+- completed: extended move or momentum fading after a strong run
+- watch: mixed/weak/noisy
+
+Return strict JSON only:
+{{"headline":"...", "summary":"...", "market_phase":"...", "updated_note":"...", "layers":[{{"id":"chip_design","status":"rotating","confidence":72,"reason":"...","catalysts":["..."],"watch_symbols":["NVDA","AMD"]}}], "opportunities":["..."], "risks":["..."]}}"""
+    else:
+        prompt = f"""你是美股 AI 产业链轮动分析师。请基于下面的量化行情事实和站内新闻，判断 AI 各层处于“预热 / 轮动中 / 已轮动完 / 观察”哪个阶段。
+
+行情快照：
+NASDAQ: 1D {snapshot.get('benchmark', {}).get('day_pct')}%, 5D {snapshot.get('benchmark', {}).get('five_day_pct')}%, 20D {snapshot.get('benchmark', {}).get('twenty_day_pct')}%
+层级数据：
+{chr(10).join(layers)}
+
+近期 AI / 美股新闻：
+{chr(10).join(news_lines) or "暂无站内新闻。"}
+
+阶段定义：
+- preheating：刚开始相对走强或扩散度改善，还没有完全拥挤
+- rotating：正在成为主线，涨幅和扩散度同时较强
+- completed：前期涨幅明显但动能变弱，可能已经轮动完
+- watch：信号混杂、偏弱或噪音较大
+
+严格只返回 JSON，不要解释 JSON 外文字：
+{{"headline":"一句话结论","summary":"2-3句总览","market_phase":"当前整体阶段","updated_note":"对更新时间/数据局限的短提示","layers":[{{"id":"chip_design","status":"rotating","confidence":72,"reason":"35字以内理由","catalysts":["新闻/行情催化1","催化2"],"watch_symbols":["NVDA","AMD"]}}], "opportunities":["值得继续跟踪的方向"], "risks":["主要风险"]}}"""
+
+    try:
+        resp = _get_client().chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2400,
+            temperature=0.35,
+        )
+        data = _extract_json_object(resp.choices[0].message.content)
+        if "layers" not in data:
+            data["layers"] = []
+        return data
+    except Exception as e:
+        logger.error("generate_ai_rotation_report failed: %s", e)
+        return {"error": str(e), "sections": [], "layers": []}
+
+
+def answer_ai_rotation_question(question: str, snapshot: dict, report: dict, news_items: list[dict],
+                                lang: str = "zh") -> str:
+    """Answer a subscriber's follow-up question using the current rotation context."""
+    if not config.DEEPSEEK_API_KEY:
+        return "DEEPSEEK_API_KEY 未配置，暂时无法调用大模型分析。"
+    question = (question or "").strip()
+    if not question:
+        return ""
+
+    layer_lines = []
+    report_by_id = {l.get("id"): l for l in report.get("layers", []) if isinstance(l, dict)}
+    for layer in snapshot.get("layers", [])[:12]:
+        ai = report_by_id.get(layer.get("id"), {})
+        layer_lines.append(
+            f"{layer.get('name')} {layer.get('id')}: "
+            f"status={ai.get('status','n/a')}, "
+            f"1D={layer.get('day_pct')}%, 5D={layer.get('five_day_pct')}%, "
+            f"relNasdaq5D={layer.get('relative_nasdaq_5d')}%, breadth={layer.get('breadth_pct')}%, "
+            f"reason={ai.get('reason','')}"
+        )
+    news_lines = []
+    for i, p in enumerate(news_items[:18]):
+        title = p.get("title") if lang == "en" else (p.get("title_zh") or p.get("title", ""))
+        news_lines.append(f"{i+1}. [{p.get('source','')}] {title}")
+
+    if lang == "en":
+        prompt = f"""Answer the user's AI sector-rotation question using only this market/news context.
+Be concise, practical, and explicit about uncertainty. Do not claim to provide financial advice.
+
+Question: {question[:800]}
+
+Current report headline: {report.get('headline','')}
+Layers:
+{chr(10).join(layer_lines)}
+
+Recent news:
+{chr(10).join(news_lines)}
+
+Answer in 3-7 bullets or short paragraphs."""
+    else:
+        prompt = f"""请只基于下面的行情和新闻上下文，回答用户关于 AI 产业链轮动的问题。
+要求：简洁、具体、说明不确定性；不要承诺投资建议。
+
+用户问题：{question[:800]}
+
+当前报告结论：{report.get('headline','')}
+层级状态：
+{chr(10).join(layer_lines)}
+
+近期新闻：
+{chr(10).join(news_lines)}
+
+用中文回答，3-7 条要点或短段落。"""
+
+    try:
+        resp = _get_client().chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1200,
+            temperature=0.45,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error("answer_ai_rotation_question failed: %s", e)
+        return f"大模型分析失败：{e}"

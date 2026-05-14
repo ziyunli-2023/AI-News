@@ -1,5 +1,7 @@
 """Configuration: tracked X accounts, RSS feeds, and API settings."""
 
+from __future__ import annotations
+
 import os
 from dotenv import load_dotenv
 
@@ -284,4 +286,93 @@ EARNINGS_WATCHLIST = [
     "COIN", "MSTR", "MARA", "RIOT", "HOOD",
     # Mega-cap finance / consumer benchmarks
     "JPM", "BAC", "GS", "WMT", "COST", "DIS", "NFLX", "UBER", "ABNB", "SPOT",
+]
+
+# ── AI sector rotation dashboard ──────────────────────────────────────────
+# Editable 10-layer AI supply chain watchlist. Yahoo symbols are used directly
+# by /api/ai-rotation/snapshot, so keep ADR suffixes/exchange suffixes in Yahoo
+# format when adding non-US names.
+AI_ROTATION_REPORT_TTL = 15 * 60
+AI_ROTATION_MARKET_TTL = 60
+AI_ROTATION_LAYERS = [
+    {
+        "id": "chip_design",
+        "name": "芯片设计",
+        "name_en": "Chip Design",
+        "description": "GPU、ASIC、CPU 与 AI 加速芯片设计公司",
+        "symbols": ["NVDA", "AMD", "AVGO", "QCOM", "MRVL", "ARM"],
+        "core": ["NVDA", "AMD", "AVGO"],
+    },
+    {
+        "id": "fab_equipment",
+        "name": "晶圆/设备",
+        "name_en": "Foundry & Equipment",
+        "description": "晶圆代工、EDA、半导体设备与先进制程上游",
+        "symbols": ["TSM", "ASML", "AMAT", "LRCX", "KLAC", "SNPS", "CDNS"],
+        "core": ["TSM", "ASML", "AMAT"],
+    },
+    {
+        "id": "memory",
+        "name": "HBM/存储",
+        "name_en": "HBM & Memory",
+        "description": "HBM、DRAM、NAND 与 AI 服务器存储周期",
+        "symbols": ["MU", "WDC", "STX", "SMCI"],
+        "core": ["MU", "WDC"],
+    },
+    {
+        "id": "networking",
+        "name": "网络互连",
+        "name_en": "Networking",
+        "description": "交换机、光模块、以太网与数据中心互连",
+        "symbols": ["ANET", "CSCO", "CIEN", "COHR", "AVGO"],
+        "core": ["ANET", "AVGO"],
+    },
+    {
+        "id": "server_cooling",
+        "name": "服务器/散热",
+        "name_en": "Servers & Cooling",
+        "description": "AI 服务器、整机、液冷、电源与数据中心建设",
+        "symbols": ["SMCI", "DELL", "HPE", "VRT", "ETN", "TT"],
+        "core": ["SMCI", "DELL", "VRT"],
+    },
+    {
+        "id": "cloud_platform",
+        "name": "云平台",
+        "name_en": "Cloud Platforms",
+        "description": "大型云厂商、AI capex 与算力平台",
+        "symbols": ["MSFT", "GOOGL", "AMZN", "META", "ORCL"],
+        "core": ["MSFT", "GOOGL", "AMZN", "META"],
+    },
+    {
+        "id": "model_platform",
+        "name": "模型平台",
+        "name_en": "Model Platforms",
+        "description": "大模型入口、开发者平台、模型商业化代理标的",
+        "symbols": ["MSFT", "GOOGL", "META", "BIDU", "BABA"],
+        "core": ["MSFT", "GOOGL", "META"],
+    },
+    {
+        "id": "data_infra",
+        "name": "数据基础设施",
+        "name_en": "Data Infrastructure",
+        "description": "数据库、数据仓库、观测、安全与 AI 数据栈",
+        "symbols": ["SNOW", "DDOG", "MDB", "NET", "ESTC", "PANW", "CRWD"],
+        "core": ["SNOW", "DDOG", "MDB"],
+    },
+    {
+        "id": "ai_apps",
+        "name": "企业 AI 应用",
+        "name_en": "Enterprise AI Apps",
+        "description": "AI 应用、办公、CRM、自动化与垂直软件",
+        "symbols": ["PLTR", "CRM", "ADBE", "NOW", "INTU", "APP", "UBER"],
+        "core": ["PLTR", "CRM", "ADBE", "NOW"],
+    },
+    {
+        "id": "power_energy",
+        "name": "电力能源",
+        "name_en": "Power & Energy",
+        "description": "数据中心电力、核能、天然气、电网与能源基础设施",
+        "symbols": ["CEG", "VST", "GEV", "ETN", "PWR", "NEE", "CCJ"],
+        "core": ["CEG", "VST", "GEV"],
+    },
 ]

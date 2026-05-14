@@ -1,12 +1,15 @@
 """FastAPI web server — real-time AI news dashboard with WebSocket push."""
 
+from __future__ import annotations
+
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Set
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 import storage
@@ -24,6 +27,10 @@ _briefing_cache: dict = {}   # keyed by lang
 _briefing_cache_at: dict = {}
 _digest_cache: dict = {}     # keyed by lang
 _digest_cache_at: dict = {}
+_ai_rotation_market_cache: dict = {}
+_ai_rotation_market_cache_at: float = 0
+_ai_rotation_report_cache: dict = {}     # keyed by lang
+_ai_rotation_report_cache_at: dict = {}
 
 # ── WebSocket connection manager ───────────────────────────────────────────
 class ConnectionManager:
@@ -223,6 +230,243 @@ def get_markets():
         _markets_cache = result
         _markets_cache_at = time.time()
     return result
+
+
+# ── AI sector rotation ─────────────────────────────────────────────────────
+
+def require_subscription():
+    """Placeholder for future subscriber gating.
+
+    The feature is designed as subscriber-only, but auth/subscription is not
+    implemented yet. Add the real check here and call sites stay unchanged.
+    """
+    return True
+
+
+def _safe_pct(last: float | None, base: float | None) -> float | None:
+    if last is None or base in (None, 0):
+        return None
+    return round((last / base - 1) * 100, 2)
+
+
+def _fetch_symbol_history(symbol: str) -> dict:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1mo"
+    resp = httpx.get(url, timeout=8, headers=_YF_HEADERS)
+    result = resp.json()["chart"]["result"][0]
+    meta = result.get("meta", {})
+    quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+    closes = [c for c in (quote.get("close") or []) if c is not None]
+    if not closes:
+        price = meta.get("regularMarketPrice")
+        closes = [price] if price is not None else []
+    last = meta.get("regularMarketPrice") or (closes[-1] if closes else None)
+    prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+    if prev is None and len(closes) >= 2:
+        prev = closes[-2]
+    five_base = closes[-6] if len(closes) >= 6 else (closes[0] if closes else prev)
+    twenty_base = closes[-21] if len(closes) >= 21 else (closes[0] if closes else prev)
+    return {
+        "symbol": symbol,
+        "price": round(last, 2) if last is not None else None,
+        "day_pct": _safe_pct(last, prev),
+        "five_day_pct": _safe_pct(last, five_base),
+        "twenty_day_pct": _safe_pct(last, twenty_base),
+        "ts": meta.get("regularMarketTime"),
+        "error": "",
+    }
+
+
+def _weighted_avg(values: list[tuple[float | None, float]]) -> float | None:
+    valid = [(v, w) for v, w in values if v is not None]
+    if not valid:
+        return None
+    return round(sum(v * w for v, w in valid) / sum(w for _v, w in valid), 2)
+
+
+def _fallback_layer_status(layer: dict) -> str:
+    five = float(layer.get("five_day_pct") or 0)
+    twenty = float(layer.get("twenty_day_pct") or 0)
+    rel = float(layer.get("relative_nasdaq_5d") or 0)
+    breadth = int(layer.get("breadth_pct") or 0)
+    if five > 6 and rel > 2 and breadth >= 60:
+        return "rotating"
+    if rel > 1 and breadth >= 45 and five > 0:
+        return "preheating"
+    if twenty > 12 and (five < 1 or breadth < 45):
+        return "completed"
+    return "watch"
+
+
+def _build_ai_rotation_snapshot(force: bool = False) -> dict:
+    global _ai_rotation_market_cache, _ai_rotation_market_cache_at
+    ttl = getattr(config, "AI_ROTATION_MARKET_TTL", 60)
+    if not force and _ai_rotation_market_cache and time.time() - _ai_rotation_market_cache_at < ttl:
+        return _ai_rotation_market_cache
+
+    symbols = {"^IXIC"}
+    for layer in config.AI_ROTATION_LAYERS:
+        symbols.update(layer.get("symbols", []))
+
+    symbol_data: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+    for sym in sorted(symbols):
+        try:
+            symbol_data[sym] = _fetch_symbol_history(sym)
+        except Exception as e:
+            logger.warning("AI rotation market fetch failed for %s: %s", sym, e)
+            errors[sym] = str(e)
+            prev = (_ai_rotation_market_cache.get("symbols") or {}).get(sym)
+            if prev:
+                symbol_data[sym] = prev
+            else:
+                symbol_data[sym] = {"symbol": sym, "price": None, "day_pct": None,
+                                    "five_day_pct": None, "twenty_day_pct": None,
+                                    "ts": None, "error": str(e)}
+
+    benchmark = symbol_data.get("^IXIC", {})
+    benchmark_5d = benchmark.get("five_day_pct") or 0
+    layers = []
+    for cfg in config.AI_ROTATION_LAYERS:
+        core = set(cfg.get("core") or [])
+        stocks = []
+        for sym in cfg.get("symbols", []):
+            d = dict(symbol_data.get(sym, {"symbol": sym}))
+            d["core"] = sym in core
+            stocks.append(d)
+        day = _weighted_avg([(s.get("day_pct"), 1.5 if s.get("core") else 1.0) for s in stocks])
+        five = _weighted_avg([(s.get("five_day_pct"), 1.5 if s.get("core") else 1.0) for s in stocks])
+        twenty = _weighted_avg([(s.get("twenty_day_pct"), 1.5 if s.get("core") else 1.0) for s in stocks])
+        valid_day = [s for s in stocks if s.get("day_pct") is not None]
+        breadth = round(sum(1 for s in valid_day if s.get("day_pct") > 0) / len(valid_day) * 100) if valid_day else 0
+        ranked = sorted(valid_day, key=lambda s: s.get("day_pct") or -999, reverse=True)
+        layer = {
+            "id": cfg.get("id"),
+            "name": cfg.get("name"),
+            "name_en": cfg.get("name_en"),
+            "description": cfg.get("description"),
+            "day_pct": day,
+            "five_day_pct": five,
+            "twenty_day_pct": twenty,
+            "relative_nasdaq_5d": round((five or 0) - float(benchmark_5d or 0), 2),
+            "breadth_pct": breadth,
+            "stocks": stocks,
+            "leaders": ranked[:3],
+            "laggards": list(reversed(ranked[-3:])) if ranked else [],
+        }
+        layer["fallback_status"] = _fallback_layer_status(layer)
+        layers.append(layer)
+
+    layers.sort(key=lambda x: ((x.get("relative_nasdaq_5d") or -999), (x.get("five_day_pct") or -999)), reverse=True)
+    snapshot = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "benchmark": benchmark,
+        "layers": layers,
+        "symbols": symbol_data,
+        "errors": errors,
+    }
+    if any(v.get("price") is not None for v in symbol_data.values()):
+        _ai_rotation_market_cache = snapshot
+        _ai_rotation_market_cache_at = time.time()
+    return snapshot
+
+
+def _rotation_news(limit: int = 30) -> list[dict]:
+    posts = []
+    try:
+        posts.extend(storage.get_latest_posts_by_category("us_stock", limit=limit // 2))
+        posts.extend(storage.get_latest_posts_by_category("ai", limit=limit // 2))
+    except Exception as e:
+        logger.warning("AI rotation news lookup failed: %s", e)
+    posts.sort(key=lambda p: p.get("published") or p.get("fetched_at") or "", reverse=True)
+    return posts[:limit]
+
+
+def _fallback_rotation_report(snapshot: dict, lang: str = "zh") -> dict:
+    status_label = {
+        "zh": {"preheating": "预热", "rotating": "轮动中", "completed": "已轮动完", "watch": "观察"},
+        "en": {"preheating": "Preheating", "rotating": "Rotating", "completed": "Completed", "watch": "Watch"},
+    }.get(lang, {})
+    best = (snapshot.get("layers") or [{}])[0]
+    if lang == "en":
+        headline = f"{best.get('name_en') or best.get('name') or 'AI'} leads the current AI rotation"
+        summary = "AI analysis is unavailable, so this view uses quantitative rotation signals only."
+    else:
+        headline = f"{best.get('name') or 'AI'}暂时领跑 AI 产业链轮动"
+        summary = "大模型分析未配置或调用失败，当前使用量化行情信号生成基础判断。"
+    return {
+        "headline": headline,
+        "summary": summary,
+        "market_phase": "quant_fallback",
+        "updated_note": "fallback",
+        "layers": [
+            {
+                "id": l.get("id"),
+                "status": l.get("fallback_status") or "watch",
+                "confidence": 45,
+                "reason": f"{status_label.get(l.get('fallback_status'), l.get('fallback_status'))}: 5D {l.get('five_day_pct')}%, breadth {l.get('breadth_pct')}%",
+                "catalysts": [],
+                "watch_symbols": [s.get("symbol") for s in (l.get("leaders") or [])[:2]],
+            }
+            for l in snapshot.get("layers", [])
+        ],
+        "opportunities": [],
+        "risks": [],
+        "fallback": True,
+    }
+
+
+@app.get("/api/ai-rotation/snapshot")
+def api_ai_rotation_snapshot(refresh: bool = False):
+    require_subscription()
+    return _build_ai_rotation_snapshot(force=refresh)
+
+
+@app.post("/api/ai-rotation/report")
+def api_ai_rotation_report(body: dict = Body(default=None)):
+    require_subscription()
+    body = body or {}
+    lang = body.get("lang", "zh")
+    refresh = bool(body.get("refresh", False))
+    ttl = getattr(config, "AI_ROTATION_REPORT_TTL", 15 * 60)
+    if (not refresh and _ai_rotation_report_cache.get(lang) is not None
+            and time.time() - _ai_rotation_report_cache_at.get(lang, 0) < ttl):
+        return _ai_rotation_report_cache[lang]
+
+    snapshot = _build_ai_rotation_snapshot(force=refresh)
+    news = _rotation_news(limit=30)
+    try:
+        import ai_processor
+        report = ai_processor.generate_ai_rotation_report(snapshot, news, lang=lang)
+        if report.get("error"):
+            report = _fallback_rotation_report(snapshot, lang=lang)
+    except Exception as e:
+        logger.warning("AI rotation report failed: %s", e)
+        report = _fallback_rotation_report(snapshot, lang=lang)
+    result = {"snapshot": snapshot, "report": report, "news": [_normalize_post(p) for p in news[:12]]}
+    _ai_rotation_report_cache[lang] = result
+    _ai_rotation_report_cache_at[lang] = time.time()
+    return result
+
+
+@app.post("/api/ai-rotation/chat")
+def api_ai_rotation_chat(body: dict = Body(default=None)):
+    require_subscription()
+    body = body or {}
+    question = (body.get("question") or "").strip()
+    lang = body.get("lang", "zh")
+    if not question:
+        return {"answer": ""}
+    snapshot = _build_ai_rotation_snapshot(force=False)
+    news = _rotation_news(limit=24)
+    cached = _ai_rotation_report_cache.get(lang)
+    report = (cached or {}).get("report") or _fallback_rotation_report(snapshot, lang=lang)
+    try:
+        import ai_processor
+        answer = ai_processor.answer_ai_rotation_question(question, snapshot, report, news, lang=lang)
+    except Exception as e:
+        logger.warning("AI rotation chat failed: %s", e)
+        answer = f"分析失败：{e}"
+    return {"answer": answer}
 
 
 @app.get("/api/podcasts")
@@ -571,6 +815,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <button class="nav-btn" id="navTrump" onclick="setCategory('trump',this)"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/5/56/Donald_Trump_official_portrait.jpg/40px-Donald_Trump_official_portrait.jpg" class="trump-avatar" onerror="this.replaceWith(document.createTextNode('🇺🇸'))"><span> Trump</span><span class="cnt" id="cnt-trump">0</span></button>
     <button class="nav-btn" onclick="setCategory('geopolitics',this)"><span data-i18n="navGeopolitics">🌍 地缘政治</span><span class="cnt" id="cnt-geopolitics">0</span></button>
     <button class="nav-btn" onclick="setCategory('ai',this)"><span data-i18n="navAI">🤖 AI</span><span class="cnt" id="cnt-ai">0</span></button>
+    <a class="nav-btn" href="/ai-rotation" style="text-decoration:none;"><span data-i18n="navAIRotation">🧭 AI 轮动</span></a>
     <button class="nav-btn" onclick="setCategory('papers',this)"><span data-i18n="navPapers">📄 论文</span><span class="cnt" id="cnt-papers">0</span></button>
     <button class="nav-btn" onclick="setCategory('web3',this)"><span data-i18n="navWeb3">🔗 Web3</span><span class="cnt" id="cnt-web3">0</span></button>
     <a class="nav-btn" href="/earnings" style="text-decoration:none;"><span data-i18n="navEarnings">📅 财报日历</span></a>
@@ -663,7 +908,7 @@ const STRINGS = {
   zh: {
     navAll:'🌐 全部', navAI:'🤖 AI', navPapers:'📄 论文', navWeb3:'🔗 Web3',
     navVenture:'💼 创投', navStocks:'📈 美股', navPolymarket:'🎯 Polymarket', navGeopolitics:'🌍 地缘政治', navPosts:'📰 博客文章',
-    navTweets:'𝕏 推文', navPodcasts:'🎙 播客', navTrump:'🇺🇸 特朗普',
+    navTweets:'𝕏 推文', navPodcasts:'🎙 播客', navTrump:'🇺🇸 特朗普', navAIRotation:'🧭 AI 轮动',
     secCategories:'分类', secFilter:'筛选', secSources:'来源',
     statPosts:'文章', statTweets:'推文', statLatest:'最新',
     statVisitTotal:'总访问', statVisitToday:'今日', statVisitWeek:'本周', statVisitMonth:'本月',
@@ -688,7 +933,7 @@ const STRINGS = {
   en: {
     navAll:'🌐 All', navAI:'🤖 AI', navPapers:'📄 Papers', navWeb3:'🔗 Web3',
     navVenture:'💼 Venture', navStocks:'📈 US Stocks', navPolymarket:'🎯 Polymarket', navGeopolitics:'🌍 Geopolitics', navPosts:'📰 Posts',
-    navTweets:'𝕏 Tweets', navPodcasts:'🎙 Podcasts', navTrump:'🇺🇸 Trump',
+    navTweets:'𝕏 Tweets', navPodcasts:'🎙 Podcasts', navTrump:'🇺🇸 Trump', navAIRotation:'🧭 AI Rotation',
     secCategories:'Categories', secFilter:'Filter', secSources:'Sources',
     statPosts:'Posts', statTweets:'Tweets', statLatest:'Latest',
     statVisitTotal:'Total visits', statVisitToday:'Today', statVisitWeek:'This week', statVisitMonth:'This month',
@@ -1393,6 +1638,334 @@ loadNews();
 def dashboard():
     storage.record_visit()
     return HTMLResponse(content=DASHBOARD_HTML)
+
+
+# ── AI rotation sub-page ───────────────────────────────────────────────────
+
+AI_ROTATION_HTML = r"""<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 产业链轮动 · YunFlow</title>
+<style>
+:root {
+  --bg:#f5f6f8; --surface:#fff; --surface2:#f0f1f4; --border:#e2e4e9;
+  --text:#111318; --text2:#4a4f5c; --muted:#858b99; --accent:#2563eb;
+  --accent-bg:#eff4ff; --green:#16a34a; --green-bg:#f0fdf4; --red:#dc2626;
+  --red-bg:#fef2f2; --amber:#d97706; --amber-bg:#fffbeb; --violet:#7c3aed;
+  --violet-bg:#f5f3ff; --shadow:0 1px 3px rgba(0,0,0,.08);
+}
+[data-theme="dark"] {
+  --bg:#0f1117; --surface:#181c25; --surface2:#1f2430; --border:#2a2f3d;
+  --text:#e8eaf0; --text2:#b3bac9; --muted:#7d8498; --accent:#5b8def;
+  --accent-bg:#1c2740; --green:#34d399; --green-bg:#0d2418; --red:#f87171;
+  --red-bg:#3a0a0a; --amber:#fbbf24; --amber-bg:#3a2e0a; --violet:#a78bfa;
+  --violet-bg:#2a1745; --shadow:0 1px 4px rgba(0,0,0,.28);
+}
+@media (prefers-color-scheme: dark) {
+  [data-theme="auto"] {
+    --bg:#0f1117; --surface:#181c25; --surface2:#1f2430; --border:#2a2f3d;
+    --text:#e8eaf0; --text2:#b3bac9; --muted:#7d8498; --accent:#5b8def;
+    --accent-bg:#1c2740; --green:#34d399; --green-bg:#0d2418; --red:#f87171;
+    --red-bg:#3a0a0a; --amber:#fbbf24; --amber-bg:#3a2e0a; --violet:#a78bfa;
+    --violet-bg:#2a1745; --shadow:0 1px 4px rgba(0,0,0,.28);
+  }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Arial,sans-serif; }
+.page { max-width:1440px; margin:0 auto; padding:16px; }
+.topbar { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.back { color:var(--text2); text-decoration:none; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:7px 12px; }
+.back:hover { color:var(--accent); border-color:var(--accent); }
+.title { margin:0; font-size:22px; font-weight:750; flex:1; }
+.btn { border:1px solid var(--border); background:var(--surface); color:var(--text2); border-radius:7px; padding:7px 11px; cursor:pointer; font-size:13px; }
+.btn:hover { color:var(--accent); border-color:var(--accent); }
+.btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:650; }
+.btn.primary:hover { color:#fff; opacity:.9; }
+.hero { display:grid; grid-template-columns: minmax(0,1.2fr) minmax(340px,.8fr); gap:12px; margin-bottom:12px; }
+.panel { background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); }
+.summary { padding:16px 18px; min-height:168px; }
+.label { font-size:11px; color:var(--muted); font-weight:750; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
+.headline { font-size:25px; line-height:1.25; font-weight:780; margin-bottom:9px; }
+.sub { color:var(--text2); font-size:15px; max-width:900px; }
+.meta { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; color:var(--muted); font-size:12px; }
+.pill { display:inline-flex; align-items:center; gap:5px; border-radius:5px; padding:3px 8px; font-size:12px; font-weight:700; white-space:nowrap; }
+.pill.rotating { color:var(--green); background:var(--green-bg); }
+.pill.preheating { color:var(--amber); background:var(--amber-bg); }
+.pill.completed { color:var(--violet); background:var(--violet-bg); }
+.pill.watch { color:var(--muted); background:var(--surface2); }
+.pill.err { color:var(--red); background:var(--red-bg); }
+.quick { padding:14px; }
+.quick-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.metric { background:var(--surface2); border:1px solid var(--border); border-radius:7px; padding:10px; min-height:74px; }
+.metric .k { color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; }
+.metric .v { margin-top:5px; font-size:20px; font-weight:750; font-variant-numeric:tabular-nums; }
+.up { color:var(--green); } .down { color:var(--red); } .flat { color:var(--muted); }
+.grid { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:12px; }
+.layer { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px; box-shadow:var(--shadow); min-height:220px; display:flex; flex-direction:column; gap:9px; }
+.layer-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.layer-title { font-weight:760; font-size:15px; line-height:1.25; }
+.desc { color:var(--muted); font-size:12px; min-height:36px; }
+.nums { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+.num { background:var(--surface2); border-radius:6px; padding:7px 6px; }
+.num span { display:block; color:var(--muted); font-size:10px; font-weight:700; }
+.num b { display:block; margin-top:2px; font-size:14px; font-variant-numeric:tabular-nums; }
+.stocks { display:flex; flex-wrap:wrap; gap:5px; margin-top:auto; }
+.stock { border:1px solid var(--border); background:var(--surface2); border-radius:5px; padding:3px 6px; font-size:11px; font-weight:700; font-variant-numeric:tabular-nums; }
+.reason { color:var(--text2); font-size:13px; line-height:1.45; border-top:1px solid var(--border); padding-top:8px; }
+.lower { display:grid; grid-template-columns:minmax(0,1fr) 430px; gap:12px; }
+.report { padding:15px 17px; }
+.report h2, .chat h2 { margin:0 0 10px; font-size:16px; }
+.list { display:grid; gap:8px; }
+.item { background:var(--surface2); border:1px solid var(--border); border-radius:7px; padding:10px 11px; color:var(--text2); }
+.item strong { color:var(--text); }
+.chat { padding:15px; }
+textarea { width:100%; min-height:92px; resize:vertical; border:1px solid var(--border); background:var(--surface2); color:var(--text); border-radius:7px; padding:10px; font:inherit; outline:none; }
+textarea:focus { border-color:var(--accent); background:var(--surface); }
+.answer { margin-top:10px; padding:11px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:7px; color:var(--text2); white-space:pre-wrap; min-height:88px; }
+.news { margin-top:12px; display:grid; gap:6px; }
+.news a { color:var(--text2); text-decoration:none; }
+.news a:hover { color:var(--accent); text-decoration:underline; }
+.small { font-size:12px; color:var(--muted); }
+@media (max-width:1180px) { .grid { grid-template-columns:repeat(3,1fr); } .hero,.lower { grid-template-columns:1fr; } }
+@media (max-width:760px) {
+  .page { padding:10px; } .title { font-size:19px; }
+  .grid { grid-template-columns:1fr; }
+  .quick-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .metric { padding:8px 6px; min-height:64px; }
+  .metric .v { font-size:16px; }
+  .headline { font-size:20px; }
+}
+</style>
+</head>
+<body data-theme="auto">
+<div class="page">
+  <div class="topbar">
+    <a class="back" href="/" id="backText">← 返回主页</a>
+    <h1 class="title" id="pageTitle">AI 产业链轮动</h1>
+    <button class="btn" onclick="toggleLang()" id="langBtn">EN</button>
+    <button class="btn" onclick="toggleTheme()" id="themeBtn">☀</button>
+    <button class="btn primary" onclick="loadReport(true)" id="refreshBtn">刷新 AI 分析</button>
+  </div>
+
+  <section class="hero">
+    <div class="panel summary">
+      <div class="label" id="subGate">订阅功能 · 当前为占位放行</div>
+      <div class="headline" id="headline">加载 AI 轮动报告…</div>
+      <div class="sub" id="summaryText">正在抓取 Yahoo 行情，并结合站内 AI / 美股新闻生成分析。</div>
+      <div class="meta">
+        <span id="updatedAt">—</span>
+        <span id="cacheHint">AI 报告缓存 15 分钟</span>
+        <span class="pill err" id="fallbackBadge" style="display:none;">量化降级</span>
+      </div>
+    </div>
+    <div class="panel quick">
+      <div class="label" id="quickLabel">Market Pulse</div>
+      <div class="quick-grid">
+        <div class="metric"><div class="k">NASDAQ 1D</div><div class="v" id="nas1d">—</div></div>
+        <div class="metric"><div class="k">NASDAQ 5D</div><div class="v" id="nas5d">—</div></div>
+        <div class="metric"><div class="k" id="leaderLabel">领跑层</div><div class="v" id="topLayer">—</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid" id="layers"></section>
+
+  <section class="lower">
+    <div class="panel report">
+      <h2 id="reportTitle">AI 调研报告</h2>
+      <div class="list" id="reportList"></div>
+      <div class="news" id="newsList"></div>
+    </div>
+    <div class="panel chat">
+      <h2 id="chatTitle">追问当前轮动</h2>
+      <textarea id="question" placeholder="例如：为什么服务器/散热层开始走弱？下一层可能轮到哪里？"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+        <button class="btn primary" onclick="askQuestion()" id="askBtn">发送</button>
+        <span class="small" id="chatHint">回答只基于当前行情和站内新闻。</span>
+      </div>
+      <div class="answer" id="answer">等待问题…</div>
+    </div>
+  </section>
+</div>
+
+<script>
+const L = {
+  zh: {
+    back:'← 返回主页', title:'AI 产业链轮动', refresh:'刷新 AI 分析',
+    gate:'订阅功能 · 当前为占位放行', loading:'加载 AI 轮动报告…',
+    loadingSub:'正在抓取 Yahoo 行情，并结合站内 AI / 美股新闻生成分析。',
+    cache:'AI 报告缓存 15 分钟', fallback:'量化降级', pulse:'Market Pulse', leader:'领跑层',
+    report:'AI 调研报告', chat:'追问当前轮动', ask:'发送',
+    hint:'回答只基于当前行情和站内新闻。', waiting:'等待问题…',
+    thinking:'分析中…', noReport:'暂无报告内容',
+    opp:'机会', risk:'风险', news:'近期相关资讯',
+    ph:'例如：为什么服务器/散热层开始走弱？下一层可能轮到哪里？',
+    status:{preheating:'预热', rotating:'轮动中', completed:'已轮动完', watch:'观察'}
+  },
+  en: {
+    back:'← Back', title:'AI Sector Rotation', refresh:'Refresh AI Analysis',
+    gate:'Subscriber feature · auth placeholder', loading:'Loading AI rotation report…',
+    loadingSub:'Fetching Yahoo market data and analyzing local AI / US stock news.',
+    cache:'AI report cached for 15 minutes', fallback:'Quant fallback', pulse:'Market Pulse', leader:'Leader',
+    report:'AI Research Report', chat:'Ask About Rotation', ask:'Send',
+    hint:'Answers use current market data and local news only.', waiting:'Waiting for a question…',
+    thinking:'Analyzing…', noReport:'No report yet',
+    opp:'Opportunities', risk:'Risks', news:'Recent related news',
+    ph:'Example: why are servers/cooling weakening? Which layer may rotate next?',
+    status:{preheating:'Preheating', rotating:'Rotating', completed:'Completed', watch:'Watch'}
+  }
+};
+let lang = localStorage.getItem('lang') || 'zh';
+let theme = localStorage.getItem('theme') || 'auto';
+let latest = null;
+
+function $(id){ return document.getElementById(id); }
+function clsPct(v){ if (v == null) return 'flat'; return Number(v) > 0 ? 'up' : Number(v) < 0 ? 'down' : 'flat'; }
+function fmtPct(v){ if (v == null || isNaN(Number(v))) return '—'; const n = Number(v); return (n > 0 ? '+' : '') + n.toFixed(2) + '%'; }
+function statusText(s){ return (L[lang].status || {})[s] || s || 'watch'; }
+function applyTheme(){ document.body.setAttribute('data-theme', theme); $('themeBtn').textContent = theme === 'dark' ? '☾' : (theme === 'light' ? '☀' : '◐'); }
+function toggleTheme(){ theme = theme === 'auto' ? 'light' : (theme === 'light' ? 'dark' : 'auto'); localStorage.setItem('theme', theme); applyTheme(); }
+function toggleLang(){ lang = lang === 'zh' ? 'en' : 'zh'; localStorage.setItem('lang', lang); applyLang(); render(); }
+function applyLang(){
+  const l = L[lang]; document.documentElement.lang = lang;
+  $('backText').textContent = l.back; $('pageTitle').textContent = l.title;
+  $('refreshBtn').textContent = l.refresh; $('subGate').textContent = l.gate;
+  $('cacheHint').textContent = l.cache; $('fallbackBadge').textContent = l.fallback;
+  $('quickLabel').textContent = l.pulse; $('leaderLabel').textContent = l.leader;
+  $('reportTitle').textContent = l.report; $('chatTitle').textContent = l.chat;
+  $('askBtn').textContent = l.ask; $('chatHint').textContent = l.hint;
+  $('question').placeholder = l.ph; $('langBtn').textContent = lang === 'zh' ? 'EN' : '中';
+  if (!latest) { $('headline').textContent = l.loading; $('summaryText').textContent = l.loadingSub; $('answer').textContent = l.waiting; }
+}
+
+async function loadReport(refresh){
+  $('refreshBtn').disabled = true;
+  try {
+    const res = await fetch('/api/ai-rotation/report', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({refresh:!!refresh, lang})
+    });
+    latest = await res.json();
+    render();
+  } catch(e) {
+    $('headline').textContent = 'Load failed';
+    $('summaryText').textContent = String(e);
+  } finally {
+    $('refreshBtn').disabled = false;
+  }
+}
+
+function reportLayerMap(){
+  const out = {};
+  (((latest || {}).report || {}).layers || []).forEach(x => { if (x && x.id) out[x.id] = x; });
+  return out;
+}
+
+function render(){
+  if (!latest) return;
+  const snap = latest.snapshot || {};
+  const report = latest.report || {};
+  const layers = snap.layers || [];
+  const ai = reportLayerMap();
+  $('headline').textContent = report.headline || L[lang].noReport;
+  $('summaryText').textContent = report.summary || '';
+  $('fallbackBadge').style.display = report.fallback ? 'inline-flex' : 'none';
+  $('updatedAt').textContent = snap.updated_at ? new Date(snap.updated_at).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US') : '—';
+  const b = snap.benchmark || {};
+  $('nas1d').textContent = fmtPct(b.day_pct); $('nas1d').className = 'v ' + clsPct(b.day_pct);
+  $('nas5d').textContent = fmtPct(b.five_day_pct); $('nas5d').className = 'v ' + clsPct(b.five_day_pct);
+  $('topLayer').textContent = layers[0] ? (lang === 'zh' ? layers[0].name : (layers[0].name_en || layers[0].name)) : '—';
+
+  const wrap = $('layers'); wrap.textContent = '';
+  layers.forEach(layer => {
+    const r = ai[layer.id] || {};
+    const status = r.status || layer.fallback_status || 'watch';
+    const card = document.createElement('div'); card.className = 'layer';
+    const head = document.createElement('div'); head.className = 'layer-head';
+    const title = document.createElement('div'); title.className = 'layer-title';
+    title.textContent = lang === 'zh' ? layer.name : (layer.name_en || layer.name);
+    const pill = document.createElement('span'); pill.className = 'pill ' + status; pill.textContent = statusText(status);
+    head.appendChild(title); head.appendChild(pill); card.appendChild(head);
+    const desc = document.createElement('div'); desc.className = 'desc'; desc.textContent = layer.description || ''; card.appendChild(desc);
+    const nums = document.createElement('div'); nums.className = 'nums';
+    [['1D', layer.day_pct], ['5D', layer.five_day_pct], ['Rel', layer.relative_nasdaq_5d]].forEach(([k,v]) => {
+      const n = document.createElement('div'); n.className = 'num';
+      const s = document.createElement('span'); s.textContent = k;
+      const bb = document.createElement('b'); bb.className = clsPct(v); bb.textContent = fmtPct(v);
+      n.appendChild(s); n.appendChild(bb); nums.appendChild(n);
+    });
+    card.appendChild(nums);
+    const stocks = document.createElement('div'); stocks.className = 'stocks';
+    const watch = r.watch_symbols && r.watch_symbols.length ? r.watch_symbols : (layer.leaders || []).map(s => s.symbol);
+    watch.slice(0, 5).forEach(sym => {
+      const st = (layer.stocks || []).find(x => x.symbol === sym) || {};
+      const tag = document.createElement('span'); tag.className = 'stock ' + clsPct(st.day_pct);
+      tag.textContent = sym + ' ' + fmtPct(st.day_pct);
+      stocks.appendChild(tag);
+    });
+    card.appendChild(stocks);
+    const reason = document.createElement('div'); reason.className = 'reason';
+    reason.textContent = r.reason || (statusText(layer.fallback_status) + ' · breadth ' + layer.breadth_pct + '%');
+    card.appendChild(reason);
+    wrap.appendChild(card);
+  });
+
+  const list = $('reportList'); list.textContent = '';
+  function addSection(label, arr) {
+    if (!arr || !arr.length) return;
+    const box = document.createElement('div'); box.className = 'item';
+    box.innerHTML = '<strong>' + label + '</strong><br>' + arr.map(x => '• ' + x).join('<br>');
+    list.appendChild(box);
+  }
+  addSection(L[lang].opp, report.opportunities || []);
+  addSection(L[lang].risk, report.risks || []);
+  if (!list.children.length) {
+    const box = document.createElement('div'); box.className = 'item'; box.textContent = L[lang].noReport; list.appendChild(box);
+  }
+  const news = $('newsList'); news.textContent = '';
+  if ((latest.news || []).length) {
+    const label = document.createElement('div'); label.className = 'label'; label.textContent = L[lang].news; news.appendChild(label);
+    latest.news.slice(0, 6).forEach(n => {
+      const a = document.createElement('a'); a.href = n.url || '#'; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = '[' + (n.source || '') + '] ' + ((lang === 'zh' && n.title_zh) ? n.title_zh : n.title);
+      news.appendChild(a);
+    });
+  }
+}
+
+async function askQuestion(){
+  const q = $('question').value.trim();
+  if (!q) return;
+  $('answer').textContent = L[lang].thinking;
+  $('askBtn').disabled = true;
+  try {
+    const res = await fetch('/api/ai-rotation/chat', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({question:q, lang})
+    });
+    const data = await res.json();
+    $('answer').textContent = data.answer || '';
+  } catch(e) {
+    $('answer').textContent = String(e);
+  } finally {
+    $('askBtn').disabled = false;
+  }
+}
+
+applyTheme(); applyLang(); loadReport(false);
+</script>
+</body>
+</html>"""
+
+
+@app.get("/ai-rotation", response_class=HTMLResponse)
+def ai_rotation_page():
+    require_subscription()
+    storage.record_visit()
+    return HTMLResponse(content=AI_ROTATION_HTML)
 
 
 # ── Earnings calendar sub-page ─────────────────────────────────────────────
