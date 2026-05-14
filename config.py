@@ -258,7 +258,10 @@ EARNINGS_PROFILE_TTL_DAYS = 30   # how long to cache /stock/profile2 data
 
 # Default filters when query params are not supplied
 # Filter logic: (market_cap >= min OR industry IN whitelist OR symbol IN watchlist)
-EARNINGS_DEFAULT_MIN_CAP_M = 10000   # $10B+ by default
+EARNINGS_DEFAULT_MIN_CAP_M = 10000   # $10B+ by default (web page)
+# Stricter threshold for email digests so a heavy earnings day doesn't
+# produce a 100-row list — only mega-cap or watchlist names go to email.
+EARNINGS_EMAIL_MIN_CAP_M   = 50000   # $50B+ for email
 EARNINGS_INDUSTRIES_DEFAULT = [
     "Semiconductors", "Technology", "Software", "Media",
     "Communication Services", "Communication", "Internet Content & Information",

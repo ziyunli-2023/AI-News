@@ -1,10 +1,11 @@
 """Email notifier — sends digest at 07:00, 12:00 and 20:00 daily."""
 
+import html as _html
 import logging
 import smtplib
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -18,6 +19,146 @@ logger = logging.getLogger(__name__)
 SEND_HOURS = {7, 12, 20}
 SEND_WINDOWS = {7: 11, 12: 5, 20: 8}   # hour → look-back hours
 SEND_LABELS  = {7: "早报", 12: "午报", 20: "晚报"}
+
+# Earnings calendar block — included in 07:00 (today) and 20:00 (tomorrow's preview)
+_HOUR_LABEL_ZH = {"bmo": "盘前", "amc": "盘后", "dmh": "盘中"}
+_IMPACT_COLOR  = {"high": "#dc2626", "medium": "#ea580c", "low": "#6b7280"}
+_IMPACT_LABEL  = {"high": "高影响", "medium": "中影响", "low": "低影响"}
+
+
+def _fmt_cap(m_usd: float | None) -> str:
+    if not m_usd:
+        return ""
+    if m_usd >= 1_000_000:
+        return f"${m_usd/1_000_000:.1f}T"
+    if m_usd >= 1000:
+        return f"${m_usd/1000:.0f}B"
+    return f"${m_usd:.0f}M"
+
+
+def _build_calendar_html(target_date, label_zh: str) -> str:
+    """Render an HTML block for the day's earnings/IPO/macro events.
+
+    target_date: a datetime.date.
+    Returns "" if the day has no events under the default filter.
+    """
+    iso = target_date.isoformat()
+    # Email uses a stricter cap threshold and drops the broad industry whitelist:
+    # only mega-cap or watchlist names ship to email so a heavy earnings day
+    # stays scannable. Full list is still on the /earnings sub-page.
+    bucket = storage.get_calendar_window(iso, iso, {
+        "min_market_cap_m": getattr(config, "EARNINGS_EMAIL_MIN_CAP_M", 50000),
+        "industries":       [],
+        "watchlist":        config.EARNINGS_WATCHLIST,
+    }).get(iso, {"earnings": [], "ipos": [], "macro": []})
+
+    earnings = bucket.get("earnings") or []
+    ipos     = bucket.get("ipos") or []
+    macro    = bucket.get("macro") or []
+    if not (earnings or ipos or macro):
+        return ""
+
+    parts = ["""
+  <div style='background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;
+              padding:16px 20px;margin-bottom:24px;'>
+"""]
+    weekday = ["一", "二", "三", "四", "五", "六", "日"][target_date.weekday()]
+    header = f"📅 {label_zh}财报与重要数据 · {target_date.strftime('%Y-%m-%d')} 周{weekday}"
+    parts.append(f"""    <div style='font-size:13px;font-weight:700;color:#1e40af;margin-bottom:12px;'>{header}</div>
+""")
+
+    # Macro first — usually the most market-moving
+    if macro:
+        parts.append("""    <div style='margin-bottom:12px;'>
+      <div style='font-size:12px;font-weight:600;color:#dc2626;margin-bottom:6px;'>🏛 美国宏观事件</div>
+      <ul style='margin:0;padding-left:20px;'>
+""")
+        for m in macro:
+            impact = (m.get("impact") or "low").lower()
+            color  = _IMPACT_COLOR.get(impact, "#6b7280")
+            ilabel = _IMPACT_LABEL.get(impact, impact)
+            time_s = _html.escape(m.get("time") or "")
+            title  = _html.escape(m.get("title") or "")
+            tail = ""
+            if m.get("notes"):
+                tail = f"<span style='color:#6b7280;'> &nbsp;·&nbsp; {_html.escape(m['notes'])}</span>"
+            time_html = f"<span style='color:#374151;'>{time_s}</span> &nbsp;·&nbsp; " if time_s else ""
+            parts.append(
+                f"        <li style='margin:4px 0;font-size:13px;line-height:1.55;'>"
+                f"{time_html}<strong>{title}</strong> "
+                f"<span style='color:{color};font-size:11px;font-weight:600;'>[{ilabel}]</span>"
+                f"{tail}</li>\n"
+            )
+        parts.append("      </ul>\n    </div>\n")
+
+    # Earnings — sort by market cap desc (already done by storage)
+    if earnings:
+        # Cap to 12 to keep email tidy even on heavy days
+        shown = earnings[:12]
+        more  = len(earnings) - len(shown)
+        parts.append(f"""    <div style='margin-bottom:12px;'>
+      <div style='font-size:12px;font-weight:600;color:#1e40af;margin-bottom:6px;'>📊 财报 ({len(earnings)})</div>
+      <ul style='margin:0;padding-left:20px;'>
+""")
+        for e in shown:
+            sym  = _html.escape(e.get("symbol") or "")
+            name = _html.escape(e.get("name") or "")
+            hour = (e.get("hour") or "").lower()
+            hour_label = _HOUR_LABEL_ZH.get(hour, "")
+            hour_html = ""
+            if hour_label:
+                hour_html = (f" <span style='background:#dbeafe;color:#1e40af;"
+                             f"padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;'>"
+                             f"{hour_label}</span>")
+            details = []
+            eps = e.get("eps_estimate")
+            if eps is not None:
+                try: details.append(f"EPS 预期 ${float(eps):.2f}")
+                except Exception: pass
+            cap_str = _fmt_cap(e.get("market_cap_m"))
+            if cap_str:
+                details.append(cap_str)
+            details_html = ""
+            if details:
+                details_html = f"<span style='color:#6b7280;font-size:12px;'> &nbsp;·&nbsp; {' · '.join(details)}</span>"
+            url = e.get("weburl") or f"https://finance.yahoo.com/quote/{sym}"
+            parts.append(
+                f"        <li style='margin:4px 0;font-size:13px;line-height:1.55;'>"
+                f"<a href='{_html.escape(url)}' style='color:#1e40af;text-decoration:none;font-weight:600;' "
+                f"target='_blank'>{sym}</a>{hour_html} "
+                f"<span style='color:#374151;'>{name}</span>"
+                f"{details_html}</li>\n"
+            )
+        if more > 0:
+            parts.append(
+                f"        <li style='margin:4px 0;font-size:12px;color:#6b7280;font-style:italic;'>"
+                f"… 另有 {more} 家(查看 /earnings 子页面)</li>\n"
+            )
+        parts.append("      </ul>\n    </div>\n")
+
+    # IPOs
+    if ipos:
+        parts.append(f"""    <div>
+      <div style='font-size:12px;font-weight:600;color:#7c3aed;margin-bottom:6px;'>🚀 IPO ({len(ipos)})</div>
+      <ul style='margin:0;padding-left:20px;'>
+""")
+        for i in ipos[:8]:
+            name = _html.escape(i.get("name") or "")
+            sym  = _html.escape(i.get("symbol") or "")
+            sym_html = f" <span style='color:#6b7280;'>({sym})</span>" if sym else ""
+            details = []
+            if i.get("exchange"):    details.append(_html.escape(i["exchange"]))
+            if i.get("price_range"): details.append(f"${_html.escape(i['price_range'])}")
+            details_html = (f"<span style='color:#6b7280;font-size:12px;'> &nbsp;·&nbsp; {' · '.join(details)}</span>"
+                            if details else "")
+            parts.append(
+                f"        <li style='margin:4px 0;font-size:13px;line-height:1.55;'>"
+                f"<strong style='color:#7c3aed;'>{name}</strong>{sym_html}{details_html}</li>\n"
+            )
+        parts.append("      </ul>\n    </div>\n")
+
+    parts.append("  </div>\n")
+    return "".join(parts)
 
 
 def _ensure_translations(posts: list[dict], tweets: list[dict]):
@@ -135,9 +276,16 @@ class EmailNotifier:
             if q["item"].get("id") not in existing_ids:
                 batch.append(q)
 
-        if batch:
+        # Earnings calendar: 07:00 → today, 20:00 → tomorrow's preview
+        calendar_html = ""
+        if slot_hour == 7:
+            calendar_html = _build_calendar_html(slot_time.date(), "今日")
+        elif slot_hour == 20:
+            calendar_html = _build_calendar_html(slot_time.date() + timedelta(days=1), "明日")
+
+        if batch or calendar_html:
             try:
-                self._send(batch, label=label)
+                self._send(batch, label=label, calendar_html=calendar_html)
                 storage.record_digest_sent(date_str, slot_hour)
                 return True
             except Exception as e:
@@ -253,7 +401,7 @@ class EmailNotifier:
                 server.sendmail(config.EMAIL_SENDER, recipient, msg.as_string())
         logger.info("Alert sent: [%s] %s", post["source"], post["title"][:80])
 
-    def _send(self, batch: list[dict], label: str = "Digest"):
+    def _send(self, batch: list[dict], label: str = "Digest", calendar_html: str = ""):
         _podcast_sources = {f["name"] for f in config.RSS_FEEDS if f.get("podcast")}
 
         all_posts = [b for b in batch if b["type"] == "post"]
@@ -340,6 +488,10 @@ class EmailNotifier:
     <ul style='margin:0;padding-left:20px;'>{bullets_html}</ul>
   </div>
 """)
+
+        # ── 📅 Earnings calendar — only present in 07:00/20:00 emails ──────
+        if calendar_html:
+            html_parts.append(calendar_html)
 
         # ── ⚡ Category Briefing (analogous to website /api/briefing) ──────
         sections = (briefing or {}).get("sections") or []
