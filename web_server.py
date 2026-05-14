@@ -1538,6 +1538,24 @@ h1.title { margin: 0; font-size: 20px; font-weight: 700; flex: 1; }
 
 .empty { text-align: center; color: var(--muted); padding: 30px 0; font-size: 13px; }
 
+/* News expander */
+.news-toggle { background: none; border: none; color: var(--accent); font-size: 12px; cursor: pointer; margin-top: 8px; padding: 2px 0; display: inline-flex; align-items: center; gap: 4px; }
+.news-toggle:hover { text-decoration: underline; }
+.news-toggle .arrow { transition: transform .2s; display: inline-block; }
+.news-toggle.open .arrow { transform: rotate(90deg); }
+.news-list { margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--border); display: none; }
+.news-list.open { display: block; }
+.news-item { padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.news-item:last-child { border-bottom: none; }
+.news-item .nt { font-size: 12.5px; line-height: 1.4; color: var(--text); }
+.news-item .nt a { color: var(--text); text-decoration: none; }
+.news-item .nt a:hover { color: var(--accent); text-decoration: underline; }
+.news-item .nm { font-size: 10.5px; color: var(--muted); margin-top: 3px; display: flex; gap: 8px; flex-wrap: wrap; }
+.news-item .nm .src { color: var(--accent); }
+.news-item .nm .src.finnhub { color: var(--ipo); }
+.news-loading { font-size: 12px; color: var(--muted); padding: 8px 0; }
+.news-empty { font-size: 12px; color: var(--muted); padding: 8px 0; font-style: italic; }
+
 @media (max-width: 720px) {
   .cal-day { min-height: 70px; padding: 4px; }
   .cal-day .day-events { gap: 1px; }
@@ -1621,6 +1639,7 @@ const L = {
     high:'高影响', medium:'中影响', low:'低影响',
     expected:'预期', priced:'已定价', withdrawn:'已撤回', filed:'已申报',
     capLabels:['不限','$1B+','$10B+','$50B+','$200B+','$500B+','$1T+'],
+    viewNews:'查看相关资讯', hideNews:'收起资讯', noNews:'未找到相关资讯', loadingNews:'加载中…',
   },
   en: {
     back:'Back to home', title:'📅 Earnings Calendar', prev:'Prev', next:'Next', today:'Today',
@@ -1635,6 +1654,7 @@ const L = {
     high:'High', medium:'Med', low:'Low',
     expected:'Expected', priced:'Priced', withdrawn:'Withdrawn', filed:'Filed',
     capLabels:['Any','$1B+','$10B+','$50B+','$200B+','$500B+','$1T+'],
+    viewNews:'View related news', hideNews:'Hide news', noNews:'No related news found', loadingNews:'Loading…',
   }
 };
 const CAP_VALUES = [0, 1000, 10000, 50000, 200000, 500000, 1000000];
@@ -1827,6 +1847,91 @@ function fmtCap(m) {
   return '$' + m.toFixed(0) + 'M';
 }
 
+function fmtNewsDate(s) {
+  if (!s) return '';
+  try {
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return s.slice(0, 10);
+    const now = new Date();
+    const diffH = (now - d) / 3600000;
+    if (diffH < 1) return Math.max(1, Math.round(diffH * 60)) + 'm';
+    if (diffH < 24) return Math.round(diffH) + 'h';
+    if (diffH < 24 * 30) return Math.round(diffH / 24) + 'd';
+    return s.slice(0, 10);
+  } catch (e) { return s.slice(0, 10); }
+}
+
+const NEWS_CACHE = {};
+
+function buildNewsItem(n) {
+  const item = el('div', { cls: 'news-item' });
+  const t = el('div', { cls: 'nt' });
+  const link = el('a', { href: n.url || '#', target: '_blank', rel: 'noopener',
+                          text: (lang === 'zh' && n.title_zh) ? n.title_zh : (n.title || '') });
+  t.appendChild(link);
+  item.appendChild(t);
+
+  const meta = el('div', { cls: 'nm' });
+  if (n.source) {
+    meta.appendChild(el('span', { cls: 'src' + (n.category === 'finnhub' ? ' finnhub' : ''), text: n.source }));
+  }
+  if (n.published) {
+    meta.appendChild(el('span', { text: fmtNewsDate(n.published) }));
+  }
+  item.appendChild(meta);
+  return item;
+}
+
+function attachNewsExpander(row, params) {
+  const l = L[lang];
+  const cacheKey = JSON.stringify(params);
+
+  const toggle = el('button', { cls: 'news-toggle' });
+  const arrow = el('span', { cls: 'arrow', text: '▶' });
+  const labelSpan = el('span', { text: ' ' + l.viewNews });
+  toggle.appendChild(arrow);
+  toggle.appendChild(labelSpan);
+
+  const list = el('div', { cls: 'news-list' });
+  let loaded = false;
+
+  toggle.onclick = async (ev) => {
+    ev.stopPropagation();
+    const isOpen = toggle.classList.toggle('open');
+    list.classList.toggle('open', isOpen);
+    labelSpan.textContent = ' ' + (isOpen ? l.hideNews : l.viewNews);
+    if (isOpen && !loaded) {
+      loaded = true;
+      list.textContent = '';
+      list.appendChild(el('div', { cls: 'news-loading', text: l.loadingNews }));
+      try {
+        let data;
+        if (NEWS_CACHE[cacheKey]) {
+          data = NEWS_CACHE[cacheKey];
+        } else {
+          const qs = new URLSearchParams(params);
+          const res = await fetch('/api/event-news?' + qs.toString());
+          data = await res.json();
+          NEWS_CACHE[cacheKey] = data;
+        }
+        list.textContent = '';
+        const items = (data && data.items) || [];
+        if (!items.length) {
+          list.appendChild(el('div', { cls: 'news-empty', text: l.noNews }));
+        } else {
+          items.forEach(n => list.appendChild(buildNewsItem(n)));
+        }
+      } catch (err) {
+        list.textContent = '';
+        list.appendChild(el('div', { cls: 'news-empty', text: l.noNews }));
+      }
+    }
+  };
+
+  row.appendChild(toggle);
+  row.appendChild(list);
+}
+
 function buildEarningsRow(e) {
   const l = L[lang];
   const row = el('div', { cls: 'drawer-row' });
@@ -1864,6 +1969,7 @@ function buildEarningsRow(e) {
     sub.textContent = subText;
     row.appendChild(sub);
   }
+  attachNewsExpander(row, { type: 'earnings', symbol: e.symbol, name: e.name || '' });
   return row;
 }
 
@@ -1888,6 +1994,7 @@ function buildIpoRow(i) {
   if (subParts.length) {
     row.appendChild(el('div', { cls: 'row-sub', text: subParts.join(' · ') }));
   }
+  attachNewsExpander(row, { type: 'ipo', symbol: i.symbol || '', name: i.name || '' });
   return row;
 }
 
@@ -1912,6 +2019,7 @@ function buildMacroRow(m) {
     sub.textContent = subText;
     row.appendChild(sub);
   }
+  attachNewsExpander(row, { type: 'macro', category: m.category || '', title: m.title || '' });
   return row;
 }
 
@@ -1962,3 +2070,94 @@ reload();
 def earnings_page():
     storage.record_visit()
     return HTMLResponse(content=EARNINGS_HTML)
+
+
+# Cache the macro keywords map (loaded once, reused for every event-news lookup)
+_MACRO_KEYWORDS_CACHE: dict[str, list[str]] | None = None
+
+
+def _macro_keywords_map() -> dict[str, list[str]]:
+    global _MACRO_KEYWORDS_CACHE
+    if _MACRO_KEYWORDS_CACHE is not None:
+        return _MACRO_KEYWORDS_CACHE
+    import os
+    path = os.path.join(os.path.dirname(__file__), "data", "us_macro_events.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+        _MACRO_KEYWORDS_CACHE = (doc.get("keywords_by_category") or {}) if isinstance(doc, dict) else {}
+    except Exception:
+        _MACRO_KEYWORDS_CACHE = {}
+    return _MACRO_KEYWORDS_CACHE
+
+
+def _normalize_post(p: dict) -> dict:
+    """Trim fields for the event-news response (keep payload light)."""
+    return {
+        "source":    p.get("source") or "",
+        "title":     p.get("title") or "",
+        "title_zh":  p.get("title_zh") or "",
+        "summary":   (p.get("summary") or "")[:280],
+        "url":       p.get("url") or "",
+        "published": p.get("published") or p.get("fetched_at") or "",
+        "category":  p.get("category") or "",
+    }
+
+
+@app.get("/api/event-news")
+def api_event_news(
+    type: str,                # "earnings" | "ipo" | "macro"
+    symbol: str = None,       # for earnings/ipo
+    name: str = None,         # company name (used as fallback search term)
+    category: str = None,     # for macro: "fomc"|"cpi"|...
+    title: str = None,        # for macro: full title (also used as search term)
+    limit: int = 8,
+):
+    """Return relevant news items for a calendar event.
+
+    Strategy:
+    - Earnings/IPO: search local blog_posts by symbol/name; if < 3 hits AND we have
+      a Finnhub key, also fetch /company-news as supplementary results.
+    - Macro: search local blog_posts using keywords mapped from event category
+      (with the title itself as an extra hint).
+    """
+    type = (type or "").lower()
+    items: list[dict] = []
+
+    if type in ("earnings", "ipo"):
+        keywords = []
+        if symbol:
+            keywords.append(symbol)
+        if name:
+            # Strip common corporate suffixes so 'NVIDIA Corporation' also matches 'NVIDIA'
+            cleaned = name
+            for suf in (" Corporation", " Corp.", " Corp", ", Inc.", " Inc.", " Inc",
+                        " Ltd.", " Ltd", " plc", " plc.", " AG", " SA", " NV"):
+                if cleaned.endswith(suf):
+                    cleaned = cleaned[: -len(suf)]
+            keywords.append(cleaned.strip())
+        local = storage.search_posts_any_keyword(keywords, limit=limit, days=90)
+        items = [_normalize_post(p) for p in local]
+
+        if type == "earnings" and symbol and len(items) < 3:
+            try:
+                from earnings_monitor import fetch_company_news
+                extra = fetch_company_news(symbol, days=14, limit=limit - len(items))
+                # Mark these so the UI can label them differently
+                for e in extra:
+                    e["category"] = "finnhub"
+                items.extend(extra)
+            except Exception as e:
+                logger.warning("Finnhub company-news fallback failed: %s", e)
+
+    elif type == "macro":
+        keywords = list(_macro_keywords_map().get((category or "").lower(), []))
+        if title:
+            # Use title's first significant word too (e.g. "FOMC", "CPI")
+            first = title.split()[0] if title else ""
+            if first and len(first) >= 2 and first not in keywords:
+                keywords.append(first)
+        local = storage.search_posts_any_keyword(keywords, limit=limit, days=30)
+        items = [_normalize_post(p) for p in local]
+
+    return {"items": items[:limit]}

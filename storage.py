@@ -539,6 +539,40 @@ def get_top_posts(hours: int = 48, limit: int = 10) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def search_posts_any_keyword(keywords: list[str], limit: int = 10, days: int = 60) -> list[dict]:
+    """Return blog_posts whose title OR summary matches ANY of the keywords.
+
+    Used by the earnings-calendar event-news lookup. Newest first, deduplicated by id.
+    Skips empty/very-short keywords to avoid pathological LIKE matches.
+    """
+    keywords = [k.strip() for k in (keywords or []) if k and len(k.strip()) >= 2]
+    if not keywords:
+        return []
+    from datetime import timedelta
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    where = " OR ".join(["title LIKE ? OR summary LIKE ?"] * len(keywords))
+    params: list = []
+    for k in keywords:
+        like = f"%{k}%"
+        params.extend([like, like])
+    params.append(cutoff)
+    params.append(limit)
+    sql = f"""SELECT * FROM blog_posts
+              WHERE ({where}) AND COALESCE(published, fetched_at) >= ?
+              ORDER BY COALESCE(published, fetched_at) DESC
+              LIMIT ?"""
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    seen, out = set(), []
+    for r in rows:
+        d = dict(r)
+        if d["id"] in seen:
+            continue
+        seen.add(d["id"])
+        out.append(d)
+    return out
+
+
 def search_news(query: str, limit: int = 20, source_type: str = "all") -> list[dict]:
     like = f"%{query}%"
     results = []

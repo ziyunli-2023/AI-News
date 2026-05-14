@@ -2,6 +2,16 @@
   "_description": "美国宏观经济重要事件日历。Finnhub 经济日历是付费的,所以用手工维护。日期来自:Fed 官方 FOMC schedule、BLS 历史发布模式(CPI 通常月中、NFP 通常每月第一个周五、PCE 通常月末)、BEA GDP 发布日。",
   "_categories": "fomc | cpi | jobs | gdp | pce | retail | ppi | other",
   "_impact": "high | medium | low",
+  "_keywords_note": "用于在 RSS/blog_posts 里搜相关资讯。混中英文以匹配 YunFlow 现有的中英文新闻源。",
+  "keywords_by_category": {
+    "fomc":   ["FOMC", "Federal Reserve", "Fed rate", "rate decision", "rate cut", "rate hike", "interest rate", "Powell", "dot plot", "美联储", "加息", "降息", "利率", "鲍威尔"],
+    "cpi":    ["CPI", "inflation", "consumer price", "通胀", "物价", "通货膨胀", "CPI 数据"],
+    "pce":    ["PCE", "personal consumption", "core inflation", "Fed preferred inflation", "PCE 物价", "核心通胀"],
+    "jobs":   ["nonfarm payroll", "NFP", "jobs report", "unemployment rate", "labor market", "non-farm", "非农", "就业", "失业率", "就业报告"],
+    "ppi":    ["PPI", "producer price", "wholesale inflation", "生产者物价", "PPI 数据"],
+    "gdp":    ["GDP", "gross domestic product", "economic growth", "国内生产总值", "经济增长", "GDP 增速"],
+    "retail": ["retail sales", "consumer spending", "零售销售", "消费支出"]
+  },
   "events": [
     {"date": "2026-01-09", "time": "08:30 ET", "title": "Nonfarm Payrolls (Dec 2025)", "category": "jobs", "impact": "high"},
     {"date": "2026-01-13", "time": "08:30 ET", "title": "CPI (Dec 2025)", "category": "cpi", "impact": "high"},

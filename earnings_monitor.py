@@ -119,6 +119,37 @@ def enrich_profiles(symbols: list[str]) -> int:
     return n_ok
 
 
+def fetch_company_news(symbol: str, days: int = 14, limit: int = 10) -> list[dict]:
+    """Pull Finnhub /company-news for a ticker. Returns normalized items.
+
+    Free tier: this endpoint is included. Returns up to ~50 items per call.
+    Returns [] if no API key or call fails — caller should treat as soft failure.
+    """
+    if not config.FINNHUB_API_KEY or not symbol:
+        return []
+    today = datetime.now(timezone.utc).date()
+    frm = (today - timedelta(days=days)).isoformat()
+    data = _get("/company-news", {"symbol": symbol, "from": frm, "to": today.isoformat()})
+    if not isinstance(data, list):
+        return []
+    out = []
+    for n in data[:limit]:
+        ts = n.get("datetime")
+        try:
+            iso = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts else None
+        except Exception:
+            iso = None
+        out.append({
+            "source":   n.get("source") or "Finnhub",
+            "title":    n.get("headline") or "",
+            "summary":  n.get("summary") or "",
+            "url":      n.get("url") or "",
+            "published": iso,
+            "image":    n.get("image") or None,
+        })
+    return out
+
+
 def load_macro_events() -> int:
     try:
         with open(_MACRO_FILE, "r", encoding="utf-8") as f:
