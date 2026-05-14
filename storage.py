@@ -855,6 +855,7 @@ def get_calendar_window(start: str, end: str, filters: dict | None = None) -> di
     min_cap = filters.get("min_market_cap_m", 10000)
     industries = [i.lower() for i in (filters.get("industries") or [])]
     watchlist = set((filters.get("watchlist") or []))
+    include_earnings = filters.get("include_earnings", True)
     include_ipos = filters.get("include_ipos", True)
     include_macro = filters.get("include_macro", True)
 
@@ -864,8 +865,11 @@ def get_calendar_window(start: str, end: str, filters: dict | None = None) -> di
         return out.setdefault(d, {"earnings": [], "ipos": [], "macro": []})
 
     with get_conn() as conn:
-        # Earnings — JOIN profiles, filter client-side for flexibility
-        rows = conn.execute(
+        if not include_earnings:
+            rows = []
+        else:
+            # Earnings — JOIN profiles, filter client-side for flexibility
+            rows = conn.execute(
             """SELECT e.symbol, e.date, e.hour, e.eps_estimate, e.eps_actual,
                       e.rev_estimate, e.rev_actual, e.quarter, e.year,
                       p.name, p.market_cap_m, p.industry, p.logo, p.weburl

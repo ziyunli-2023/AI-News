@@ -1404,6 +1404,7 @@ def api_earnings_calendar(
     min_cap_m: int = None,
     industries: str = None,
     watchlist: str = None,
+    include_earnings: int = 1,
     include_ipos: int = 1,
     include_macro: int = 1,
 ):
@@ -1424,6 +1425,7 @@ def api_earnings_calendar(
             "min_market_cap_m": min_cap_m,
             "industries": industries_list,
             "watchlist": watchlist_list,
+            "include_earnings": bool(include_earnings),
             "include_ipos": bool(include_ipos),
             "include_macro": bool(include_macro),
         },
@@ -1485,6 +1487,17 @@ h1.title { margin: 0; font-size: 20px; font-weight: 700; flex: 1; }
 .filters .cap-val { font-weight: 600; color: var(--accent); min-width: 60px; }
 .filters .toggle { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
 .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+.chip-group { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; background: var(--surface2); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; font-size: 12px; color: var(--text2); user-select: none; transition: all .12s; }
+.chip:hover { border-color: var(--accent); }
+.chip.active { font-weight: 600; }
+.chip[data-kind="earn"].active { background: var(--earn-bg); color: var(--earn); border-color: var(--earn); }
+.chip[data-kind="ipo"].active { background: var(--ipo-bg); color: var(--ipo); border-color: var(--ipo); }
+.chip[data-kind="macro"].active { background: var(--macro-hi-bg); color: var(--macro-hi); border-color: var(--macro-hi); }
+.chip[data-kind="watch"].active { background: #fffbeb; color: #b45309; border-color: #fbbf24; }
+[data-theme="dark"] .chip[data-kind="watch"].active { background: #3a2e0a; color: #fbbf24; }
+.chip-info { font-size: 11px; color: var(--muted); cursor: help; margin-left: 4px; opacity: 0.65; }
+.chip-info:hover { opacity: 1; }
 
 .cal-grid { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .cal-week-header { display: grid; grid-template-columns: repeat(7, 1fr); background: var(--surface2); border-bottom: 1px solid var(--border); }
@@ -1585,28 +1598,17 @@ h1.title { margin: 0; font-size: 20px; font-weight: 700; flex: 1; }
   </div>
 
   <div class="filters">
+    <div class="chip-group">
+      <span class="chip active" data-kind="earn" id="chipEarn" onclick="toggleChip('earn')">📊 <span id="t-chipE">财报</span></span>
+      <span class="chip active" data-kind="ipo" id="chipIpo" onclick="toggleChip('ipo')">🚀 <span id="t-chipI">IPO</span></span>
+      <span class="chip active" data-kind="macro" id="chipMacro" onclick="toggleChip('macro')">🏛 <span id="t-chipM">宏观</span></span>
+      <span class="chip" data-kind="watch" id="chipWatch" onclick="toggleChip('watch')" title="只显示 watchlist 里的热门股 (40 只: AAPL/NVDA/META/BABA/PDD 等)">⭐ <span id="t-chipW">仅热点</span></span>
+    </div>
     <label>
       <span id="t-cap">最低市值</span>:
       <input type="range" id="capRange" min="0" max="6" step="1" value="2" oninput="onCapChange()">
       <span class="cap-val" id="capVal">$10B</span>
     </label>
-    <label class="toggle">
-      <input type="checkbox" id="incIpos" checked onchange="reload()">
-      <span id="t-ipos">含 IPO</span>
-    </label>
-    <label class="toggle">
-      <input type="checkbox" id="incMacro" checked onchange="reload()">
-      <span id="t-macro">含宏观事件</span>
-    </label>
-    <label class="toggle">
-      <input type="checkbox" id="onlyWatch" onchange="onWatchToggle()">
-      <span id="t-onlywatch">仅热点</span>
-    </label>
-    <span style="font-size:12px;color:var(--muted)">
-      <span class="legend-dot" style="background:var(--earn)"></span><span id="t-legendE">财报</span>
-      <span class="legend-dot" style="background:var(--ipo);margin-left:10px"></span><span id="t-legendI">IPO</span>
-      <span class="legend-dot" style="background:var(--macro-hi);margin-left:10px"></span><span id="t-legendM">重要数据</span>
-    </span>
   </div>
 
   <div class="cal-grid">
@@ -1628,8 +1630,9 @@ h1.title { margin: 0; font-size: 20px; font-weight: 700; flex: 1; }
 const L = {
   zh: {
     back:'返回主页', title:'📅 财报日历 · Earnings Calendar', prev:'上月', next:'下月', today:'今天',
-    cap:'最低市值', ipos:'含 IPO', macro:'含宏观事件', onlywatch:'仅热点',
-    legendE:'财报', legendI:'IPO', legendM:'重要数据',
+    cap:'最低市值',
+    chipEarn:'财报', chipIpo:'IPO', chipMacro:'宏观', chipWatch:'仅热点',
+    watchTip:'只显示 watchlist 里的 40 只热门股 (七巨头 / 大科技 / 中概 / Crypto / 金融消费蓝筹)',
     weekdays:['周一','周二','周三','周四','周五','周六','周日'],
     months:['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'],
     earnings:'财报', ipo:'IPO', macroSec:'美国宏观事件',
@@ -1643,8 +1646,9 @@ const L = {
   },
   en: {
     back:'Back to home', title:'📅 Earnings Calendar', prev:'Prev', next:'Next', today:'Today',
-    cap:'Min Mkt Cap', ipos:'Include IPOs', macro:'Include Macro', onlywatch:'Watchlist Only',
-    legendE:'Earnings', legendI:'IPO', legendM:'Macro',
+    cap:'Min Mkt Cap',
+    chipEarn:'Earnings', chipIpo:'IPO', chipMacro:'Macro', chipWatch:'Watchlist',
+    watchTip:'Show only the 40 watchlist tickers (Mag 7 / Big Tech / China ADRs / Crypto / Blue chips)',
     weekdays:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],
     months:['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
     earnings:'Earnings', ipo:'IPO', macroSec:'US Macro Events',
@@ -1701,12 +1705,11 @@ function applyLang() {
   $('t-next').textContent = l.next;
   $('t-today').textContent = l.today;
   $('t-cap').textContent = l.cap;
-  $('t-ipos').textContent = l.ipos;
-  $('t-macro').textContent = l.macro;
-  $('t-onlywatch').textContent = l.onlywatch;
-  $('t-legendE').textContent = l.legendE;
-  $('t-legendI').textContent = l.legendI;
-  $('t-legendM').textContent = l.legendM;
+  $('t-chipE').textContent = l.chipEarn;
+  $('t-chipI').textContent = l.chipIpo;
+  $('t-chipM').textContent = l.chipMacro;
+  $('t-chipW').textContent = l.chipWatch;
+  $('chipWatch').title = l.watchTip;
   $('langBtn').textContent = lang==='zh' ? 'EN' : '中';
   const wh = $('weekHeader');
   wh.textContent = '';
@@ -1722,7 +1725,13 @@ function updateCapLabel() {
   $('capVal').textContent = L[lang].capLabels[idx];
 }
 function onCapChange() { updateCapLabel(); reload(); }
-function onWatchToggle() { onlyWatch = $('onlyWatch').checked; reload(); }
+function toggleChip(kind) {
+  const id = { earn: 'chipEarn', ipo: 'chipIpo', macro: 'chipMacro', watch: 'chipWatch' }[kind];
+  if (!id) return;
+  $(id).classList.toggle('active');
+  if (kind === 'watch') onlyWatch = $(id).classList.contains('active');
+  reload();
+}
 
 function ymd(d) {
   const y = d.getFullYear();
@@ -1754,8 +1763,9 @@ async function reload() {
     start: ymd(gridStart),
     end:   ymd(gridEnd),
     min_cap_m: String(minCap),
-    include_ipos: $('incIpos').checked ? '1' : '0',
-    include_macro: $('incMacro').checked ? '1' : '0',
+    include_earnings: $('chipEarn').classList.contains('active') ? '1' : '0',
+    include_ipos:     $('chipIpo').classList.contains('active')  ? '1' : '0',
+    include_macro:    $('chipMacro').classList.contains('active') ? '1' : '0',
   });
   if (onlyWatch) params.set('industries', '');
   try {
