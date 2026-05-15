@@ -606,6 +606,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <input type="text" id="searchInput" placeholder="搜索新闻…" oninput="onSearch(this.value)">
       </div>
       <button class="lang-pill" id="langPill" onclick="toggleLang()">EN</button>
+      <!--ACCOUNT_PILL-->
       <div class="new-pill" id="newBadge" onclick="scrollToTop()">↑ 有新内容</div>
     </div>
 
@@ -1391,10 +1392,37 @@ loadNews();
 </html>"""
 
 
+_ACCOUNT_PILL_STYLE = (
+    "display:flex;align-items:center;gap:6px;height:36px;padding:0 14px;"
+    "border-radius:20px;background:var(--surface2);color:var(--text);"
+    "text-decoration:none;font-size:13px;font-weight:600;flex-shrink:0;"
+    "border:1px solid var(--border);transition:background .15s;"
+)
+
+
+def _account_pill_html(sub) -> str:
+    """Build the topbar pill that links to /account (or /login if logged out)."""
+    if sub is None:
+        return (
+            f"<a href='/login' style='{_ACCOUNT_PILL_STYLE}' "
+            f"title='登录订阅账号'>👤 <span>登录</span></a>"
+        )
+    import html as _h
+    label = sub.name or sub.email.split("@")[0]
+    badge = "★" if subscribers.is_paid(sub) else ""
+    return (
+        f"<a href='/account' style='{_ACCOUNT_PILL_STYLE}' "
+        f"title='查看账号'>👤 <span>{_h.escape(label)}</span>"
+        f"{f' <span style=\"color:#ca8a04\">{badge}</span>' if badge else ''}</a>"
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
-def dashboard():
+def dashboard(request: Request):
     storage.record_visit()
-    return HTMLResponse(content=DASHBOARD_HTML)
+    sub = auth.current_subscriber(request)
+    html = DASHBOARD_HTML.replace("<!--ACCOUNT_PILL-->", _account_pill_html(sub))
+    return HTMLResponse(content=html)
 
 
 # ── Earnings calendar sub-page ─────────────────────────────────────────────
@@ -1762,6 +1790,14 @@ h1.title { margin: 0; font-size: 22px; font-weight: 700; flex: 1; }
 .cal-export-menu.open { display: block; }
 .cal-export-menu .item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; border-radius: 7px; cursor: pointer; color: var(--text); text-decoration: none; }
 .cal-export-menu .item:hover { background: var(--surface2); }
+.cal-export-menu .item.disabled { opacity: 0.55; cursor: not-allowed; }
+.cal-export-menu .item.disabled:hover { background: transparent; }
+.cal-export-menu .item.disabled .sub { color: var(--macro-hi); }
+.export-summary { padding: 8px 11px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text2); line-height: 1.5; }
+.export-summary .row { display: flex; gap: 6px; align-items: baseline; }
+.export-summary .label { color: var(--muted); flex-shrink: 0; }
+.export-summary .value { color: var(--text); font-weight: 500; }
+.export-summary .live-note { font-size: 11px; color: var(--muted); margin-top: 3px; font-style: italic; }
 .cal-export-menu .item .ico { font-size: 18px; line-height: 1.3; flex-shrink: 0; }
 .cal-export-menu .item .lbl { font-size: 14px; font-weight: 600; }
 .cal-export-menu .item .sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.35; }
@@ -1881,6 +1917,7 @@ h1.title { margin: 0; font-size: 22px; font-weight: 700; flex: 1; }
     <div class="cal-export" id="calExport">
       <button class="cal-export-btn" onclick="toggleExportMenu(event)">📥 <span id="t-export">添加到日历</span> ▾</button>
       <div class="cal-export-menu" id="exportMenu" onclick="event.stopPropagation()">
+        <div class="export-summary" id="exportSummary"></div>
         <a class="item" id="optGcal" href="#" target="_blank" rel="noopener">
           <span class="ico">📅</span>
           <span>
@@ -1973,10 +2010,16 @@ const L = {
     viewNews:'查看相关资讯', hideNews:'收起资讯', noNews:'未找到相关资讯', loadingNews:'加载中…',
     exportBtn:'添加到日历',
     optGcal:'订阅 Google Calendar', optGcalSub:'在 Google 中实时同步未来更新',
+    optGcalLocalSub:'需公网 URL — Google 无法访问 localhost',
     optApple:'订阅 Apple Calendar', optAppleSub:'通过 webcal:// 自动同步',
+    optAppleImport:'添加到 Apple Calendar (导入)', optAppleLocalSub:'localhost 下回退为单次导入',
     optDownload:'下载 .ics 文件', optDownloadSub:'一次性导入，不会自动更新',
     optCopy:'复制订阅链接', optCopySub:'用于 Outlook 或其他日历应用',
     toastCopied:'订阅链接已复制', toastCopyFail:'复制失败，请手动复制',
+    toastLocalSubscribe:'订阅功能需要公网可访问的 URL',
+    sumTypes:'类型', sumCap:'市值', sumRange:'范围', sumWatch:'仅热点 watchlist',
+    sumDownloadHint:'下载/导入将仅包含当前可见日历', sumSubscribeHint:'订阅自动同步未来 3 个月',
+    sumCapAny:'不限', sumNoTypes:'未选择任何类型',
   },
   en: {
     back:'Back to home', title:'📅 Earnings Calendar', prev:'Prev', next:'Next', today:'Today',
@@ -1995,10 +2038,16 @@ const L = {
     viewNews:'View related news', hideNews:'Hide news', noNews:'No related news found', loadingNews:'Loading…',
     exportBtn:'Add to Calendar',
     optGcal:'Subscribe in Google Calendar', optGcalSub:'Auto-sync future updates in Google',
+    optGcalLocalSub:'Needs public URL — Google can\'t reach localhost',
     optApple:'Subscribe in Apple Calendar', optAppleSub:'Auto-sync via webcal://',
+    optAppleImport:'Add to Apple Calendar (import)', optAppleLocalSub:'Falls back to one-time import on localhost',
     optDownload:'Download .ics file', optDownloadSub:'One-time import, no auto-update',
     optCopy:'Copy subscribe URL', optCopySub:'Use with Outlook or any calendar app',
     toastCopied:'Subscribe URL copied', toastCopyFail:'Copy failed — please copy manually',
+    toastLocalSubscribe:'Subscribe needs a publicly reachable URL',
+    sumTypes:'Types', sumCap:'Min cap', sumRange:'Range', sumWatch:'Watchlist only',
+    sumDownloadHint:'Download/import includes only the visible month', sumSubscribeHint:'Subscribe auto-syncs next 3 months',
+    sumCapAny:'Any', sumNoTypes:'No types selected',
   }
 };
 const CAP_VALUES = [0, 1000, 10000, 50000, 200000, 500000, 1000000];
@@ -2074,7 +2123,7 @@ function updateCapLabel() {
   const idx = parseInt($('capRange').value);
   $('capVal').textContent = L[lang].capLabels[idx];
 }
-function onCapChange() { updateCapLabel(); reload(); }
+function onCapChange() { updateCapLabel(); reload(); refreshExportLinks(); }
 function toggleChip(kind) {
   const id = { earn: 'chipEarn', ipo: 'chipIpo', macro: 'chipMacro', watch: 'chipWatch' }[kind];
   if (!id) return;
@@ -2085,7 +2134,16 @@ function toggleChip(kind) {
 }
 
 // ── Calendar export (.ics) ────────────────────────────────────────────────
-function buildIcsParams() {
+function visibleGridRange() {
+  // Same logic as reload(): Monday of the week containing the 1st, +42 days.
+  const gridStart = new Date(cursor); gridStart.setDate(1);
+  const firstWeekday = (gridStart.getDay() + 6) % 7;
+  gridStart.setDate(gridStart.getDate() - firstWeekday);
+  const gridEnd = new Date(gridStart); gridEnd.setDate(gridStart.getDate() + 41);
+  return { start: ymd(gridStart), end: ymd(gridEnd) };
+}
+function buildIcsParams(opts) {
+  opts = opts || {};
   const capIdx = parseInt($('capRange').value);
   let minCap = CAP_VALUES[capIdx];
   if (onlyWatch) minCap = 99999999;
@@ -2096,21 +2154,110 @@ function buildIcsParams() {
     include_macro:    $('chipMacro').classList.contains('active') ? '1' : '0',
   });
   if (onlyWatch) params.set('industries', '');
+  // Snapshot mode (download / one-time import): lock the export to exactly
+  // what's visible on screen. Subscribe mode (opts.snapshot=false) omits
+  // start/end so the calendar app sees a rolling future window — necessary
+  // for subscriptions to pick up newly-scheduled earnings.
+  if (opts.snapshot) {
+    const r = visibleGridRange();
+    params.set('start', r.start);
+    params.set('end',   r.end);
+  }
   return params;
 }
 function subscribeUrl(scheme) {
-  const params = buildIcsParams();
+  const params = buildIcsParams({ snapshot: false });
   const base = location.origin + '/api/earnings-calendar.ics?' + params.toString();
   if (scheme === 'webcal') return base.replace(/^https?:/, 'webcal:');
   return base;
 }
+function isLocalDev() {
+  const h = location.hostname;
+  return h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0' || h === '::1' || h.endsWith('.local');
+}
+function fmtRangeShort(startYmd, endYmd) {
+  const l = L[lang];
+  const s = new Date(startYmd + 'T00:00:00');
+  const e = new Date(endYmd + 'T00:00:00');
+  const fmt = (d) => (lang === 'zh'
+    ? (d.getMonth() + 1) + '月' + d.getDate() + '日'
+    : l.months[d.getMonth()] + ' ' + d.getDate());
+  return fmt(s) + ' – ' + fmt(e);
+}
+function refreshExportSummary() {
+  const l = L[lang];
+  const sum = $('exportSummary'); if (!sum) return;
+  const types = [];
+  if ($('chipEarn').classList.contains('active'))  types.push('📊 ' + l.chipEarn);
+  if ($('chipIpo').classList.contains('active'))   types.push('🚀 ' + l.chipIpo);
+  if ($('chipMacro').classList.contains('active')) types.push('🏛 ' + l.chipMacro);
+  const typesText = types.length ? types.join(' · ') : l.sumNoTypes;
+
+  const capIdx = parseInt($('capRange').value);
+  const capText = onlyWatch ? ('⭐ ' + l.sumWatch) : (CAP_VALUES[capIdx] ? l.capLabels[capIdx] : l.sumCapAny);
+
+  const r = visibleGridRange();
+  const rangeText = fmtRangeShort(r.start, r.end);
+
+  sum.textContent = '';
+  const mkRow = (label, value) => {
+    const row = el('div', { cls: 'row' });
+    row.appendChild(el('span', { cls: 'label', text: label + ':' }));
+    row.appendChild(el('span', { cls: 'value', text: value }));
+    return row;
+  };
+  sum.appendChild(mkRow(l.sumTypes, typesText));
+  sum.appendChild(mkRow(l.sumCap,   capText));
+  sum.appendChild(mkRow(l.sumRange, rangeText));
+  sum.appendChild(el('div', { cls: 'live-note', text: '⬇️ ' + l.sumDownloadHint }));
+  sum.appendChild(el('div', { cls: 'live-note', text: '🔄 ' + l.sumSubscribeHint }));
+}
 function refreshExportLinks() {
+  const l = L[lang];
   const httpsUrl = subscribeUrl('https');
   const webcalUrl = subscribeUrl('webcal');
-  // Google Calendar's "subscribe by URL" deep link
-  $('optGcal').href = 'https://calendar.google.com/calendar/r?cid=' + encodeURIComponent(httpsUrl);
-  // Apple Calendar / OS handler responds to webcal://
-  $('optApple').href = webcalUrl;
+  const localDev = isLocalDev();
+  refreshExportSummary();
+
+  // ── Google Calendar ────────────────────────────────────────────
+  // Subscribing via cid= requires Google's servers to fetch the URL.
+  // localhost is unreachable from outside, so disable with explanation.
+  const gcal = $('optGcal');
+  if (localDev) {
+    gcal.href = '#';
+    gcal.classList.add('disabled');
+    gcal.removeAttribute('target');
+    gcal.onclick = (e) => { e.preventDefault(); showToast(l.toastLocalSubscribe); };
+    $('t-optGcalSub').textContent = l.optGcalLocalSub;
+  } else {
+    gcal.href = 'https://calendar.google.com/calendar/r?cid=' + encodeURIComponent(httpsUrl);
+    gcal.setAttribute('target', '_blank');
+    gcal.classList.remove('disabled');
+    gcal.onclick = null;
+    $('t-optGcalSub').textContent = l.optGcalSub;
+  }
+
+  // ── Apple Calendar ─────────────────────────────────────────────
+  // webcal:// to localhost or non-standard ports is unreliable on macOS
+  // Calendar.app (Sonoma+ enforces HTTPS upgrade; webcal+custom-port often
+  // rejected). Fall back to direct .ics file — Calendar.app's file handler
+  // opens it and offers Import.
+  const apple = $('optApple');
+  if (localDev) {
+    const params = buildIcsParams({ snapshot: true });
+    params.set('download', '1');
+    apple.href = '/api/earnings-calendar.ics?' + params.toString();
+    apple.setAttribute('download', 'earnings-calendar.ics');
+    apple.onclick = () => { $('exportMenu').classList.remove('open'); };
+    $('t-optApple').textContent = l.optAppleImport;
+    $('t-optAppleSub').textContent = l.optAppleLocalSub;
+  } else {
+    apple.href = webcalUrl;
+    apple.removeAttribute('download');
+    apple.onclick = null;
+    $('t-optApple').textContent = l.optApple;
+    $('t-optAppleSub').textContent = l.optAppleSub;
+  }
 }
 function toggleExportMenu(ev) {
   ev.stopPropagation();
@@ -2119,7 +2266,7 @@ function toggleExportMenu(ev) {
 }
 function downloadIcs(ev) {
   ev.preventDefault();
-  const params = buildIcsParams();
+  const params = buildIcsParams({ snapshot: true });
   params.set('download', '1');
   window.location.href = '/api/earnings-calendar.ics?' + params.toString();
   $('exportMenu').classList.remove('open');
@@ -2168,10 +2315,12 @@ function ymd(d) {
 function navMonth(delta) {
   cursor.setMonth(cursor.getMonth() + delta);
   reload();
+  refreshExportLinks();
 }
 function goToday() {
   cursor = new Date(); cursor.setDate(1);
   reload();
+  refreshExportLinks();
 }
 
 async function reload() {
