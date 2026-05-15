@@ -178,6 +178,44 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_macro_date ON macro_events(date);
         """)
 
+        # ── Subscription system ────────────────────────────────────────────
+        # subscribers: who can receive digests / access gated pages
+        # magic_links: short-lived one-time login tokens (email-based, no password)
+        # sessions:    long-lived cookie-keyed sessions issued after Magic Link verify
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS subscribers (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                email        TEXT UNIQUE NOT NULL,
+                name         TEXT,
+                status       TEXT NOT NULL DEFAULT 'active',
+                tier         TEXT NOT NULL DEFAULT 'free',
+                paid_until   TEXT,
+                preferences  TEXT,
+                created_at   TEXT NOT NULL,
+                updated_at   TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_subscribers_status ON subscribers(status, tier);
+
+            CREATE TABLE IF NOT EXISTS magic_links (
+                token        TEXT PRIMARY KEY,
+                email        TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                expires_at   TEXT NOT NULL,
+                used_at      TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_magic_links_email ON magic_links(email);
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                id             TEXT PRIMARY KEY,
+                subscriber_id  INTEGER NOT NULL,
+                created_at     TEXT NOT NULL,
+                expires_at     TEXT NOT NULL,
+                last_seen      TEXT NOT NULL,
+                FOREIGN KEY (subscriber_id) REFERENCES subscribers(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_sub ON sessions(subscriber_id);
+        """)
+
 
 def _content_hash(title: str) -> str:
     """Normalized title hash for cross-source deduplication."""

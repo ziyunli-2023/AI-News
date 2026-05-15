@@ -248,6 +248,15 @@ EMAIL_RECIPIENT = EMAIL_RECIPIENTS[0] if EMAIL_RECIPIENTS else ""  # backwards c
 # ── Web dashboard ──────────────────────────────────────────────────────────
 WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
 
+# ── Subscription / Auth ───────────────────────────────────────────────────
+# BASE_URL is used in Magic Link emails to build absolute click-through URLs.
+# In dev it defaults to http://localhost:WEB_PORT; in prod set BASE_URL to your
+# public origin (e.g. https://news.example.com).
+BASE_URL                = os.getenv("BASE_URL", f"http://localhost:{WEB_PORT}")
+SESSION_COOKIE_NAME     = os.getenv("SESSION_COOKIE_NAME", "yunflow_session")
+SESSION_TTL_DAYS        = int(os.getenv("SESSION_TTL_DAYS", "30"))
+MAGIC_LINK_TTL_MINUTES  = int(os.getenv("MAGIC_LINK_TTL_MINUTES", "15"))
+
 # ── Earnings calendar (Finnhub) ────────────────────────────────────────────
 # Free tier: 60 req/min. Earnings + IPO calendars are free; economic calendar is paid.
 # Get a key at https://finnhub.io/dashboard (free signup).

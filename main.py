@@ -10,6 +10,7 @@ import uvicorn
 
 import config
 import storage
+import subscribers
 import ai_processor
 from rss_monitor import RSSMonitor
 from nitter_monitor import NitterMonitor
@@ -80,6 +81,10 @@ async def main():
 
     storage.init_db()
     logger.info("Database initialised")
+
+    seeded = subscribers.seed_initial_subscribers()
+    if seeded:
+        logger.info("Seeded %d subscriber(s) from EMAIL_RECIPIENTS env", seeded)
 
     notifier = EmailNotifier()
     notifier.start()

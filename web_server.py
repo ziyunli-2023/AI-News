@@ -6,11 +6,13 @@ import time
 from typing import Set
 
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, Form, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import storage
 import config
+import auth
+import subscribers
 
 logger = logging.getLogger(__name__)
 
@@ -1432,6 +1434,283 @@ def api_earnings_calendar(
     )
 
 
+# ── .ics export for earnings calendar ─────────────────────────────────────
+#
+# Strategy: reuse storage.get_calendar_window() for filtering, then render a
+# single VCALENDAR with one VEVENT per earnings/IPO/macro entry. The calendar
+# is timezone-aware (America/New_York) since BMO/AMC times are inherently ET.
+
+from datetime import datetime, date as _date, time as _time, timedelta
+from zoneinfo import ZoneInfo
+
+_ET = ZoneInfo("America/New_York")
+_ICS_PRODID = "-//YunFlow//Earnings Calendar//EN"
+
+
+def _ics_escape(s: str) -> str:
+    """Escape per RFC 5545 §3.3.11: backslash, semicolon, comma, newline."""
+    if not s:
+        return ""
+    return (s.replace("\\", "\\\\")
+             .replace(";", "\\;")
+             .replace(",", "\\,")
+             .replace("\r\n", "\\n")
+             .replace("\n", "\\n"))
+
+
+def _ics_fold(line: str) -> str:
+    """Fold lines >75 octets per RFC 5545 §3.1 (CRLF + space continuation)."""
+    if len(line.encode("utf-8")) <= 75:
+        return line
+    out, buf, size = [], [], 0
+    for ch in line:
+        b = len(ch.encode("utf-8"))
+        if size + b > 73:  # leave room for the leading space on continuation
+            out.append("".join(buf))
+            buf, size = [" ", ch], 1 + b
+        else:
+            buf.append(ch); size += b
+    out.append("".join(buf))
+    return "\r\n".join(out)
+
+
+def _ics_dt_utc(dt: datetime) -> str:
+    """Format a datetime as UTC: 20260515T123000Z."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_ET)
+    return dt.astimezone(ZoneInfo("UTC")).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _ics_date(d: _date) -> str:
+    """Format as DATE (all-day): 20260515."""
+    return d.strftime("%Y%m%d")
+
+
+def _parse_ymd(s: str) -> _date:
+    return datetime.strptime(s, "%Y-%m-%d").date()
+
+
+def _earnings_event_times(date_str: str, hour: str | None) -> tuple[datetime, datetime] | _date:
+    """Return either (start_dt, end_dt) in ET — for a timed VEVENT — or a
+    `date` object — for an all-day VEVENT.
+
+    The Finnhub `hour` field is one of: "bmo" (before market open),
+    "amc" (after market close), "dmh" (during market hours), or None.
+
+    TODO(user): implement this. See the request in the chat for trade-offs
+    to consider. Default below picks sensible times; replace as needed.
+    """
+    d = _parse_ymd(date_str)
+    if hour == "bmo":
+        # Most BMO calls run ~8:00–8:30 AM ET; 60 min is a safe window.
+        start = datetime.combine(d, _time(8, 0), tzinfo=_ET)
+        return start, start + timedelta(minutes=60)
+    if hour == "amc":
+        # AMC calls usually 4:30–5:30 PM ET.
+        start = datetime.combine(d, _time(16, 30), tzinfo=_ET)
+        return start, start + timedelta(minutes=60)
+    if hour == "dmh":
+        start = datetime.combine(d, _time(12, 0), tzinfo=_ET)
+        return start, start + timedelta(minutes=60)
+    # Unknown hour → all-day event so it stays visible without a wrong time.
+    return d
+
+
+def _macro_event_times(date_str: str, time_str: str | None) -> tuple[datetime, datetime] | _date:
+    """Macro event timing. `time_str` is "HH:MM" ET if present, else None."""
+    d = _parse_ymd(date_str)
+    if time_str:
+        try:
+            hh, mm = time_str.split(":")
+            start = datetime.combine(d, _time(int(hh), int(mm)), tzinfo=_ET)
+            return start, start + timedelta(minutes=30)
+        except (ValueError, TypeError):
+            pass
+    return d  # all-day
+
+
+def _fmt_rev_short(v) -> str:
+    if v is None:
+        return ""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if n >= 1e9:
+        return f"${n/1e9:.1f}B"
+    if n >= 1e6:
+        return f"${n/1e6:.0f}M"
+    return f"${n:.0f}"
+
+
+def _vevent(uid: str, when, summary: str, description: str = "", url: str = "") -> list[str]:
+    """Build one VEVENT block. `when` is either a `date` (all-day) or a
+    (start_dt, end_dt) tuple of aware datetimes."""
+    dtstamp = datetime.now(tz=ZoneInfo("UTC")).strftime("%Y%m%dT%H%M%SZ")
+    lines = ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{dtstamp}"]
+    if isinstance(when, tuple):
+        s, e = when
+        lines.append(f"DTSTART:{_ics_dt_utc(s)}")
+        lines.append(f"DTEND:{_ics_dt_utc(e)}")
+    else:
+        s = when
+        lines.append(f"DTSTART;VALUE=DATE:{_ics_date(s)}")
+        lines.append(f"DTEND;VALUE=DATE:{_ics_date(s + timedelta(days=1))}")
+    lines.append(f"SUMMARY:{_ics_escape(summary)}")
+    if description:
+        lines.append(f"DESCRIPTION:{_ics_escape(description)}")
+    if url:
+        lines.append(f"URL:{_ics_escape(url)}")
+    lines.append("END:VEVENT")
+    return [_ics_fold(ln) for ln in lines]
+
+
+def _render_calendar_ics(window: dict, cal_name: str = "Earnings Calendar") -> str:
+    """Transform the storage.get_calendar_window() output into an .ics body."""
+    out = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        f"PRODID:{_ICS_PRODID}",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        f"X-WR-CALNAME:{_ics_escape(cal_name)}",
+        "X-WR-TIMEZONE:America/New_York",
+        f"NAME:{_ics_escape(cal_name)}",
+        "REFRESH-INTERVAL;VALUE=DURATION:PT6H",
+        "X-PUBLISHED-TTL:PT6H",
+    ]
+
+    for date_str in sorted(window.keys()):
+        bucket = window[date_str] or {}
+
+        for e in bucket.get("earnings") or []:
+            sym = (e.get("symbol") or "").upper()
+            name = e.get("name") or sym
+            hour = (e.get("hour") or "").lower() or None
+            uid = f"earn-{sym}-{date_str}@yunflow"
+            tag = {"bmo": "BMO", "amc": "AMC", "dmh": "DMH"}.get(hour or "", "")
+            summary = f"📊 {sym} 财报" + (f" ({tag})" if tag else "")
+            desc_parts = [name]
+            if e.get("eps_estimate") is not None:
+                try:
+                    desc_parts.append(f"EPS Est: ${float(e['eps_estimate']):.2f}")
+                except (TypeError, ValueError):
+                    pass
+            rev = _fmt_rev_short(e.get("rev_estimate"))
+            if rev:
+                desc_parts.append(f"Rev Est: {rev}")
+            if e.get("industry"):
+                desc_parts.append(str(e["industry"]))
+            description = " · ".join(p for p in desc_parts if p)
+            url = e.get("weburl") or f"https://finance.yahoo.com/quote/{sym}"
+            out.extend(_vevent(uid, _earnings_event_times(date_str, hour),
+                               summary, description, url))
+
+        for ipo in bucket.get("ipos") or []:
+            name = ipo.get("name") or ipo.get("symbol") or "IPO"
+            sym = (ipo.get("symbol") or "").upper()
+            slug = sym or name.replace(" ", "_")[:24]
+            uid = f"ipo-{slug}-{date_str}@yunflow"
+            summary = f"🚀 IPO: {name}" + (f" ({sym})" if sym else "")
+            desc_parts = []
+            if ipo.get("exchange"):
+                desc_parts.append(f"Exchange: {ipo['exchange']}")
+            if ipo.get("price_range"):
+                desc_parts.append(f"Price: ${ipo['price_range']}")
+            if ipo.get("shares"):
+                try:
+                    desc_parts.append(f"Shares: {int(ipo['shares']):,}")
+                except (TypeError, ValueError):
+                    pass
+            if ipo.get("status"):
+                desc_parts.append(f"Status: {ipo['status']}")
+            description = " · ".join(desc_parts)
+            # IPOs are all-day events (no specific intraday time).
+            out.extend(_vevent(uid, _parse_ymd(date_str), summary, description))
+
+        for m in bucket.get("macro") or []:
+            title = m.get("title") or "Macro Event"
+            cat = (m.get("category") or "macro").lower()
+            slug = "".join(c if c.isalnum() else "_" for c in title)[:40]
+            uid = f"macro-{cat}-{slug}-{date_str}@yunflow"
+            impact = (m.get("impact") or "").upper()
+            summary = f"🏛 {title}" + (f" [{impact}]" if impact else "")
+            desc_parts = []
+            if m.get("category"):
+                desc_parts.append(str(m["category"]).upper())
+            if m.get("notes"):
+                desc_parts.append(str(m["notes"]))
+            description = "\n".join(desc_parts)
+            out.extend(_vevent(uid, _macro_event_times(date_str, m.get("time")),
+                               summary, description))
+
+    out.append("END:VCALENDAR")
+    return "\r\n".join(out) + "\r\n"
+
+
+@app.get("/api/earnings-calendar.ics")
+def api_earnings_calendar_ics(
+    start: str = None,
+    end: str = None,
+    months: int = 3,
+    min_cap_m: int = None,
+    industries: str = None,
+    watchlist: str = None,
+    include_earnings: int = 1,
+    include_ipos: int = 1,
+    include_macro: int = 1,
+    download: int = 0,
+):
+    """Serve the calendar as an RFC 5545 .ics file.
+
+    Designed for both one-time download (?download=1) and live subscription
+    (Google Calendar / Apple Calendar will poll this URL).
+
+    If start/end are omitted, a rolling [today, today + `months` months]
+    window is used — sensible default for subscribed calendars.
+    """
+    today = datetime.now(tz=_ET).date()
+    if not start:
+        start = today.strftime("%Y-%m-%d")
+    if not end:
+        end_date = today + timedelta(days=30 * max(1, min(months, 12)))
+        end = end_date.strftime("%Y-%m-%d")
+
+    if min_cap_m is None:
+        min_cap_m = config.EARNINGS_DEFAULT_MIN_CAP_M
+    industries_list = (
+        [s.strip() for s in industries.split(",") if s.strip()]
+        if industries is not None else config.EARNINGS_INDUSTRIES_DEFAULT
+    )
+    watchlist_list = (
+        [s.strip().upper() for s in watchlist.split(",") if s.strip()]
+        if watchlist is not None else config.EARNINGS_WATCHLIST
+    )
+
+    window = storage.get_calendar_window(
+        start, end,
+        {
+            "min_market_cap_m": min_cap_m,
+            "industries": industries_list,
+            "watchlist": watchlist_list,
+            "include_earnings": bool(include_earnings),
+            "include_ipos": bool(include_ipos),
+            "include_macro": bool(include_macro),
+        },
+    )
+    body = _render_calendar_ics(window, cal_name="YunFlow Earnings Calendar")
+    headers = {
+        "Cache-Control": "public, max-age=1800",
+    }
+    if download:
+        headers["Content-Disposition"] = 'attachment; filename="earnings-calendar.ics"'
+    return Response(
+        content=body,
+        media_type="text/calendar; charset=utf-8",
+        headers=headers,
+    )
+
+
 EARNINGS_HTML = r"""<!doctype html>
 <html lang="zh">
 <head>
@@ -1475,6 +1754,20 @@ body { margin:0; font:15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "
 .back-btn:hover { color: var(--accent); border-color: var(--accent); }
 h1.title { margin: 0; font-size: 22px; font-weight: 700; flex: 1; }
 .theme-btn { background: var(--surface); border: 1px solid var(--border); color: var(--text2); padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+
+.cal-export { position: relative; display: inline-block; }
+.cal-export-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--accent-bg); border: 1px solid var(--accent); color: var(--accent); padding: 7px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
+.cal-export-btn:hover { filter: brightness(0.95); }
+.cal-export-menu { position: absolute; right: 0; top: calc(100% + 6px); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); min-width: 260px; padding: 6px; z-index: 60; display: none; }
+.cal-export-menu.open { display: block; }
+.cal-export-menu .item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; border-radius: 7px; cursor: pointer; color: var(--text); text-decoration: none; }
+.cal-export-menu .item:hover { background: var(--surface2); }
+.cal-export-menu .item .ico { font-size: 18px; line-height: 1.3; flex-shrink: 0; }
+.cal-export-menu .item .lbl { font-size: 14px; font-weight: 600; }
+.cal-export-menu .item .sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; line-height: 1.35; }
+.cal-export-menu .divider { height: 1px; background: var(--border); margin: 4px 6px; }
+.cal-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--text); color: var(--surface); padding: 10px 18px; border-radius: 8px; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 100; }
+.cal-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 .cal-nav { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; flex-wrap: wrap; }
 .cal-nav button { background: none; border: 1px solid var(--border); color: var(--text); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 14px; }
@@ -1585,9 +1878,44 @@ h1.title { margin: 0; font-size: 22px; font-weight: 700; flex: 1; }
   <div class="topbar">
     <a class="back-btn" href="/">← <span id="t-back">返回主页</span></a>
     <h1 class="title" id="t-title">📅 财报日历 · Earnings Calendar</h1>
+    <div class="cal-export" id="calExport">
+      <button class="cal-export-btn" onclick="toggleExportMenu(event)">📥 <span id="t-export">添加到日历</span> ▾</button>
+      <div class="cal-export-menu" id="exportMenu" onclick="event.stopPropagation()">
+        <a class="item" id="optGcal" href="#" target="_blank" rel="noopener">
+          <span class="ico">📅</span>
+          <span>
+            <div class="lbl" id="t-optGcal">订阅 Google Calendar</div>
+            <div class="sub" id="t-optGcalSub">在 Google 中实时同步未来更新</div>
+          </span>
+        </a>
+        <a class="item" id="optApple" href="#">
+          <span class="ico">🍎</span>
+          <span>
+            <div class="lbl" id="t-optApple">订阅 Apple Calendar</div>
+            <div class="sub" id="t-optAppleSub">通过 webcal:// 自动同步</div>
+          </span>
+        </a>
+        <div class="divider"></div>
+        <a class="item" id="optDownload" href="#" onclick="downloadIcs(event)">
+          <span class="ico">⬇️</span>
+          <span>
+            <div class="lbl" id="t-optDownload">下载 .ics 文件</div>
+            <div class="sub" id="t-optDownloadSub">一次性导入，不会自动更新</div>
+          </span>
+        </a>
+        <a class="item" id="optCopy" href="#" onclick="copySubscribeUrl(event)">
+          <span class="ico">🔗</span>
+          <span>
+            <div class="lbl" id="t-optCopy">复制订阅链接</div>
+            <div class="sub" id="t-optCopySub">用于 Outlook 或其他日历应用</div>
+          </span>
+        </a>
+      </div>
+    </div>
     <button class="theme-btn" id="langBtn" onclick="toggleLang()">EN</button>
     <button class="theme-btn" id="themeBtn" onclick="toggleTheme()">☀</button>
   </div>
+  <div class="cal-toast" id="calToast"></div>
 
   <div class="cal-nav">
     <button onclick="navMonth(-1)">← <span id="t-prev">上月</span></button>
@@ -1643,6 +1971,12 @@ const L = {
     expected:'预期', priced:'已定价', withdrawn:'已撤回', filed:'已申报',
     capLabels:['不限','$1B+','$10B+','$50B+','$200B+','$500B+','$1T+'],
     viewNews:'查看相关资讯', hideNews:'收起资讯', noNews:'未找到相关资讯', loadingNews:'加载中…',
+    exportBtn:'添加到日历',
+    optGcal:'订阅 Google Calendar', optGcalSub:'在 Google 中实时同步未来更新',
+    optApple:'订阅 Apple Calendar', optAppleSub:'通过 webcal:// 自动同步',
+    optDownload:'下载 .ics 文件', optDownloadSub:'一次性导入，不会自动更新',
+    optCopy:'复制订阅链接', optCopySub:'用于 Outlook 或其他日历应用',
+    toastCopied:'订阅链接已复制', toastCopyFail:'复制失败，请手动复制',
   },
   en: {
     back:'Back to home', title:'📅 Earnings Calendar', prev:'Prev', next:'Next', today:'Today',
@@ -1659,6 +1993,12 @@ const L = {
     expected:'Expected', priced:'Priced', withdrawn:'Withdrawn', filed:'Filed',
     capLabels:['Any','$1B+','$10B+','$50B+','$200B+','$500B+','$1T+'],
     viewNews:'View related news', hideNews:'Hide news', noNews:'No related news found', loadingNews:'Loading…',
+    exportBtn:'Add to Calendar',
+    optGcal:'Subscribe in Google Calendar', optGcalSub:'Auto-sync future updates in Google',
+    optApple:'Subscribe in Apple Calendar', optAppleSub:'Auto-sync via webcal://',
+    optDownload:'Download .ics file', optDownloadSub:'One-time import, no auto-update',
+    optCopy:'Copy subscribe URL', optCopySub:'Use with Outlook or any calendar app',
+    toastCopied:'Subscribe URL copied', toastCopyFail:'Copy failed — please copy manually',
   }
 };
 const CAP_VALUES = [0, 1000, 10000, 50000, 200000, 500000, 1000000];
@@ -1711,6 +2051,16 @@ function applyLang() {
   $('t-chipW').textContent = l.chipWatch;
   $('chipWatch').title = l.watchTip;
   $('langBtn').textContent = lang==='zh' ? 'EN' : '中';
+  $('t-export').textContent = l.exportBtn;
+  $('t-optGcal').textContent = l.optGcal;
+  $('t-optGcalSub').textContent = l.optGcalSub;
+  $('t-optApple').textContent = l.optApple;
+  $('t-optAppleSub').textContent = l.optAppleSub;
+  $('t-optDownload').textContent = l.optDownload;
+  $('t-optDownloadSub').textContent = l.optDownloadSub;
+  $('t-optCopy').textContent = l.optCopy;
+  $('t-optCopySub').textContent = l.optCopySub;
+  refreshExportLinks();
   const wh = $('weekHeader');
   wh.textContent = '';
   l.weekdays.forEach((w, i) => {
@@ -1731,7 +2081,83 @@ function toggleChip(kind) {
   $(id).classList.toggle('active');
   if (kind === 'watch') onlyWatch = $(id).classList.contains('active');
   reload();
+  refreshExportLinks();
 }
+
+// ── Calendar export (.ics) ────────────────────────────────────────────────
+function buildIcsParams() {
+  const capIdx = parseInt($('capRange').value);
+  let minCap = CAP_VALUES[capIdx];
+  if (onlyWatch) minCap = 99999999;
+  const params = new URLSearchParams({
+    min_cap_m: String(minCap),
+    include_earnings: $('chipEarn').classList.contains('active') ? '1' : '0',
+    include_ipos:     $('chipIpo').classList.contains('active')  ? '1' : '0',
+    include_macro:    $('chipMacro').classList.contains('active') ? '1' : '0',
+  });
+  if (onlyWatch) params.set('industries', '');
+  return params;
+}
+function subscribeUrl(scheme) {
+  const params = buildIcsParams();
+  const base = location.origin + '/api/earnings-calendar.ics?' + params.toString();
+  if (scheme === 'webcal') return base.replace(/^https?:/, 'webcal:');
+  return base;
+}
+function refreshExportLinks() {
+  const httpsUrl = subscribeUrl('https');
+  const webcalUrl = subscribeUrl('webcal');
+  // Google Calendar's "subscribe by URL" deep link
+  $('optGcal').href = 'https://calendar.google.com/calendar/r?cid=' + encodeURIComponent(httpsUrl);
+  // Apple Calendar / OS handler responds to webcal://
+  $('optApple').href = webcalUrl;
+}
+function toggleExportMenu(ev) {
+  ev.stopPropagation();
+  const open = $('exportMenu').classList.toggle('open');
+  if (open) refreshExportLinks();
+}
+function downloadIcs(ev) {
+  ev.preventDefault();
+  const params = buildIcsParams();
+  params.set('download', '1');
+  window.location.href = '/api/earnings-calendar.ics?' + params.toString();
+  $('exportMenu').classList.remove('open');
+}
+async function copySubscribeUrl(ev) {
+  ev.preventDefault();
+  const url = subscribeUrl('https');
+  const l = L[lang];
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast(l.toastCopied);
+  } catch (e) {
+    // Fallback: legacy execCommand for non-secure contexts
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = url; document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy');
+      document.body.removeChild(ta);
+      showToast(l.toastCopied);
+    } catch (e2) {
+      showToast(l.toastCopyFail);
+    }
+  }
+  $('exportMenu').classList.remove('open');
+}
+function showToast(msg) {
+  const t = $('calToast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(showToast._tm);
+  showToast._tm = setTimeout(() => t.classList.remove('show'), 2200);
+}
+document.addEventListener('click', (e) => {
+  const menu = $('exportMenu');
+  if (menu && menu.classList.contains('open') && !$('calExport').contains(e.target)) {
+    menu.classList.remove('open');
+  }
+});
 
 function ymd(d) {
   const y = d.getFullYear();
@@ -2166,3 +2592,235 @@ def api_event_news(
         items = [_normalize_post(p) for p in local]
 
     return {"items": items[:limit]}
+
+
+# ── Subscription / Auth routes ─────────────────────────────────────────────
+#
+# Magic Link flow:
+#   GET  /login                  → form to enter your email
+#   POST /auth/request-link      → emails a one-time login URL
+#   GET  /auth/verify?token=...  → consumes the token, sets session cookie
+#   POST /auth/logout            → clears session cookie
+#   GET  /account                → logged-in user's status + logout button
+#
+# The dependency helpers (require_subscriber / require_paid) live in
+# auth.py; they raise HTTPException(302) for HTML routes so the browser
+# follows the Location header back to /login or /account?paywall=1.
+
+
+def _redirect(target: str) -> RedirectResponse:
+    """Internal helper — 303 'See Other' so POST→GET is enforced."""
+    return RedirectResponse(target, status_code=303)
+
+
+def _set_session_cookie(response: Response, session_id: str) -> None:
+    """Attach the session cookie with appropriate Secure/HttpOnly flags."""
+    is_https = config.BASE_URL.lower().startswith("https://")
+    response.set_cookie(
+        key=config.SESSION_COOKIE_NAME,
+        value=session_id,
+        max_age=config.SESSION_TTL_DAYS * 24 * 3600,
+        httponly=True,
+        secure=is_https,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=config.SESSION_COOKIE_NAME,
+        path="/",
+    )
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "/", sent: int = 0, err: str = ""):
+    """Render the email-entry form. `sent=1` shows the 'check your email' panel."""
+    # If already logged in, send them to the dashboard
+    if auth.current_subscriber(request):
+        return _redirect("/")
+
+    import html as _h
+    next_safe = _h.escape(next or "/")
+    sent_panel = (
+        """<div style='background:#dcfce7;border:1px solid #86efac;color:#166534;
+              padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;
+              line-height:1.6;'>
+            ✓ 如果该邮箱在订阅名单中,登录链接已发送。请查收邮件
+            (15 分钟内有效)。
+          </div>"""
+        if sent else ""
+    )
+    err_panel = (
+        f"<div style='background:#fee2e2;border:1px solid #fca5a5;color:#991b1b;"
+        f"padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;'>"
+        f"⚠ {_h.escape(err)}</div>"
+        if err else ""
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang='zh'><head>
+  <meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+  <title>登录 · 看牛韵新闻</title>
+</head>
+<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+             background:#f4f6fb;margin:0;padding:48px 16px;color:#222;'>
+  <div style='max-width:440px;margin:auto;background:#fff;
+              border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.06);
+              padding:32px;'>
+    <h1 style='margin:0 0 8px;font-size:22px;color:#0f3460;'>看牛韵新闻</h1>
+    <p style='margin:0 0 24px;font-size:14px;color:#666;line-height:1.6;'>
+      会员专享:AI 板块轮动 dashboard、关键词智能匹配新闻、未来研究工具。
+      输入邮箱接收一次性登录链接,无需密码。
+    </p>
+    {sent_panel}
+    {err_panel}
+    <form method='post' action='/auth/request-link' style='margin:0;'>
+      <input type='hidden' name='next' value='{next_safe}'>
+      <input type='email' name='email' required autofocus autocomplete='email'
+             placeholder='your@email.com'
+             style='display:block;width:100%;box-sizing:border-box;
+                    padding:12px 14px;font-size:14px;border:1px solid #d1d5db;
+                    border-radius:8px;margin-bottom:14px;'>
+      <button type='submit'
+              style='display:block;width:100%;padding:12px;font-size:14px;
+                     color:#fff;background:#0f3460;border:none;border-radius:8px;
+                     font-weight:600;cursor:pointer;'>
+        发送登录链接
+      </button>
+    </form>
+    <p style='margin:24px 0 0;font-size:12px;color:#999;line-height:1.5;
+              border-top:1px solid #eee;padding-top:16px;'>
+      仅限受邀订阅者。如未收到邮件,请确认邮箱拼写或联系管理员。
+    </p>
+  </div>
+</body></html>"""
+
+
+@app.post("/auth/request-link")
+def request_magic_link(
+    request: Request,
+    email: str = Form(...),
+    next: str = Form("/"),
+):
+    """Issue a one-time login URL to the given email — if it's on the allowlist.
+
+    Always returns the same response regardless of whether the email exists,
+    to prevent attackers from probing the subscriber list (email enumeration).
+    """
+    email = (email or "").strip().lower()
+    sub = subscribers.get_by_email(email) if email else None
+    if sub and sub.status == "active":
+        try:
+            token = subscribers.create_magic_link(email)
+            auth.send_magic_link_email(email, token, next_path=next or "/")
+        except Exception as e:
+            logger.error("Failed to send magic link to %s: %s", email, e)
+            # Still return the same success-looking response below
+    else:
+        # Log only — don't expose to caller
+        logger.info("Magic link requested for unknown/inactive email: %s", email)
+    return _redirect(f"/login?sent=1&next={next or '/'}")
+
+
+@app.get("/auth/verify")
+def verify_magic_link(request: Request, token: str, next: str = "/"):
+    """Consume a one-time token, create a session, set cookie, redirect."""
+    email = subscribers.consume_magic_link(token)
+    if not email:
+        return _redirect("/login?err=" + "链接无效或已过期，请重新申请")
+    sub = subscribers.get_by_email(email)
+    if not sub or sub.status != "active":
+        return _redirect("/login?err=" + "账号不存在或已暂停")
+    session_id = subscribers.create_session(sub.id)
+    target = next if (next and next.startswith("/")) else "/"
+    response = _redirect(target)
+    _set_session_cookie(response, session_id)
+    return response
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    sid = request.cookies.get(config.SESSION_COOKIE_NAME)
+    subscribers.expire_session(sid)
+    response = _redirect("/login")
+    _clear_session_cookie(response)
+    return response
+
+
+@app.get("/account", response_class=HTMLResponse)
+def account_page(request: Request, paywall: int = 0,
+                 sub=Depends(auth.require_subscriber)):
+    """Logged-in user's status. `paywall=1` shows an upgrade banner."""
+    import html as _h
+    paid = subscribers.is_paid(sub)
+    tier_badge = (
+        "<span style='background:#dcfce7;color:#166534;padding:2px 10px;"
+        "border-radius:999px;font-size:12px;font-weight:600;'>付费会员</span>"
+        if paid else
+        "<span style='background:#fef3c7;color:#92400e;padding:2px 10px;"
+        "border-radius:999px;font-size:12px;font-weight:600;'>免费用户</span>"
+    )
+    paywall_panel = (
+        """<div style='background:#fef3c7;border:1px solid #fcd34d;color:#92400e;
+              padding:14px 18px;border-radius:8px;margin-bottom:20px;font-size:14px;
+              line-height:1.6;'>
+            🔒 该页面仅对付费会员开放。如需开通,请联系管理员。
+          </div>"""
+        if paywall and not paid else ""
+    )
+    paid_until = sub.paid_until or "—(无到期)"
+    name_line = (
+        f"<div style='font-size:13px;color:#888;margin-top:4px;'>{_h.escape(sub.name)}</div>"
+        if sub.name else ""
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang='zh'><head>
+  <meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+  <title>账号 · 看牛韵新闻</title>
+</head>
+<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+             background:#f4f6fb;margin:0;padding:48px 16px;color:#222;'>
+  <div style='max-width:560px;margin:auto;background:#fff;
+              border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,.06);
+              padding:32px;'>
+    <h1 style='margin:0 0 24px;font-size:22px;color:#0f3460;'>我的账号</h1>
+    {paywall_panel}
+    <div style='border:1px solid #e5e7eb;border-radius:8px;padding:20px;
+                margin-bottom:24px;'>
+      <div style='font-size:11px;color:#888;text-transform:uppercase;
+                  letter-spacing:.5px;margin-bottom:6px;'>邮箱</div>
+      <div style='font-size:16px;font-weight:600;color:#222;'>{_h.escape(sub.email)}</div>
+      {name_line}
+    </div>
+    <div style='display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;'>
+      <div style='border:1px solid #e5e7eb;border-radius:8px;padding:16px;'>
+        <div style='font-size:11px;color:#888;text-transform:uppercase;
+                    letter-spacing:.5px;margin-bottom:8px;'>等级</div>
+        {tier_badge}
+      </div>
+      <div style='border:1px solid #e5e7eb;border-radius:8px;padding:16px;'>
+        <div style='font-size:11px;color:#888;text-transform:uppercase;
+                    letter-spacing:.5px;margin-bottom:8px;'>到期</div>
+        <div style='font-size:13px;color:#374151;'>{_h.escape(paid_until)}</div>
+      </div>
+    </div>
+    <div style='display:flex;gap:12px;'>
+      <a href='/' style='flex:1;text-align:center;padding:10px;
+         font-size:14px;color:#0f3460;background:#eef2f8;border-radius:8px;
+         text-decoration:none;font-weight:500;'>返回首页</a>
+      <form method='post' action='/auth/logout' style='flex:1;margin:0;'>
+        <button type='submit'
+                style='width:100%;padding:10px;font-size:14px;color:#991b1b;
+                       background:#fee2e2;border:none;border-radius:8px;
+                       font-weight:500;cursor:pointer;'>
+          登出
+        </button>
+      </form>
+    </div>
+  </div>
+</body></html>"""
+
+

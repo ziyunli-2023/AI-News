@@ -12,6 +12,7 @@ from email.mime.text import MIMEText
 import config
 import ai_processor
 import storage
+import subscribers
 
 logger = logging.getLogger(__name__)
 
@@ -389,16 +390,20 @@ class EmailNotifier:
 </body></html>"""
         text_body = f"{post['source']} — {post['title']}\n{post['url']}\n"
 
+        recipients = subscribers.list_active_subscribers()
+        if not recipients:
+            logger.warning("Alert — no active subscribers in DB; skipping")
+            return
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(config.EMAIL_SENDER, config.EMAIL_APP_PASSWORD)
-            for recipient in config.EMAIL_RECIPIENTS:
+            for sub in recipients:
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = subject
                 msg["From"]    = config.EMAIL_SENDER
-                msg["To"]      = recipient
+                msg["To"]      = sub.email
                 msg.attach(MIMEText(text_body, "plain"))
                 msg.attach(MIMEText(html_body, "html"))
-                server.sendmail(config.EMAIL_SENDER, recipient, msg.as_string())
+                server.sendmail(config.EMAIL_SENDER, sub.email, msg.as_string())
         logger.info("Alert sent: [%s] %s", post["source"], post["title"][:80])
 
     def _send(self, batch: list[dict], label: str = "Digest", calendar_html: str = ""):
@@ -762,16 +767,20 @@ class EmailNotifier:
             line += f"\n{p['url']}\n"
             text_lines.append(line)
 
+        recipients = subscribers.list_active_subscribers()
+        if not recipients:
+            logger.warning("Digest %s — no active subscribers in DB; skipping send", label)
+            return
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(config.EMAIL_SENDER, config.EMAIL_APP_PASSWORD)
-            for recipient in config.EMAIL_RECIPIENTS:
+            for sub in recipients:
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = subject
                 msg["From"]    = config.EMAIL_SENDER
-                msg["To"]      = recipient
+                msg["To"]      = sub.email
                 msg.attach(MIMEText("\n".join(text_lines), "plain"))
                 msg.attach(MIMEText(html_body, "html"))
-                server.sendmail(config.EMAIL_SENDER, recipient, msg.as_string())
+                server.sendmail(config.EMAIL_SENDER, sub.email, msg.as_string())
 
         logger.info("Digest sent (%s): %d items → %s", label, len(batch),
-                    ", ".join(config.EMAIL_RECIPIENTS))
+                    ", ".join(s.email for s in recipients))
