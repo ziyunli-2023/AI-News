@@ -253,13 +253,17 @@ class EmailNotifier:
         longer included in digests."""
         from datetime import timedelta
         cutoff = (slot_time - timedelta(hours=window_hours)).isoformat()
-        posts  = [p for p in storage.get_latest_posts(limit=40)
+        # Pull a wide candidate set so the window-cutoff filter — not the SQL
+        # LIMIT — decides what's in the digest. Heavy windows can produce 60+
+        # posts; the per-category quota in _send() trims it back down.
+        posts  = [p for p in storage.get_latest_posts(limit=300)
                   if (p.get("published") or p.get("fetched_at", "")) >= cutoff]
         return [{"item": p, "type": "post"} for p in posts]
 
     def _try_send_slot(self, date_str: str, slot_hour: int, slot_time: datetime, label: str):
         """Build and send digest for one slot; returns True on success."""
-        batch = self._build_batch(slot_time, SEND_WINDOWS[slot_hour])
+        window_hours = SEND_WINDOWS[slot_hour]
+        batch = self._build_batch(slot_time, window_hours)
 
         # Drain any in-memory queue items not yet in DB. Tweets are dropped
         # since digests no longer include a Twitter section.
@@ -286,7 +290,8 @@ class EmailNotifier:
 
         if batch or calendar_html:
             try:
-                self._send(batch, label=label, calendar_html=calendar_html)
+                self._send(batch, label=label, calendar_html=calendar_html,
+                           window_hours=window_hours, slot_time=slot_time)
                 storage.record_digest_sent(date_str, slot_hour)
                 return True
             except Exception as e:
@@ -406,33 +411,43 @@ class EmailNotifier:
                 server.sendmail(config.EMAIL_SENDER, sub.email, msg.as_string())
         logger.info("Alert sent: [%s] %s", post["source"], post["title"][:80])
 
-    def _send(self, batch: list[dict], label: str = "Digest", calendar_html: str = ""):
+    def _send(self, batch: list[dict], label: str = "Digest", calendar_html: str = "",
+              window_hours: int = 24, slot_time: datetime | None = None):
         _podcast_sources = {f["name"] for f in config.RSS_FEEDS if f.get("podcast")}
 
+        # Cutoff used to align every auxiliary section (briefing / trending
+        # papers / polymarket) to the same look-back window as `batch`.
+        cutoff_dt = (slot_time or datetime.now()) - timedelta(hours=window_hours)
+        cutoff_iso = cutoff_dt.isoformat()
+
         all_posts = [b for b in batch if b["type"] == "post"]
-        # Papers are a bonus section sourced separately (top-N by score, not
-        # constrained by the digest window). Hide them from the regular Posts
-        # section so they aren't shown twice.
+        # Papers are a bonus section sourced separately (top-N by score). Hide
+        # them from the regular Posts section so they aren't shown twice.
         non_paper      = [b for b in all_posts if not b["item"].get("is_paper")]
         podcasts       = [b for b in non_paper if b["item"]["source"] in _podcast_sources]
-        polymarket_top = storage.get_latest_posts_by_category("polymarket", limit=8)
+        # Polymarket — filter to slot window so the section matches the rest
+        # of the digest instead of surfacing markets from yesterday.
+        polymarket_all = storage.get_latest_posts_by_category("polymarket", limit=40)
+        polymarket_top = [p for p in polymarket_all
+                          if (p.get("fetched_at") or p.get("published") or "") >= cutoff_iso][:8]
         polymarket_ids = {p["id"] for p in polymarket_top}
         posts          = [b for b in non_paper
                           if b["item"]["source"] not in _podcast_sources
                           and b["item"].get("id") not in polymarket_ids
                           and b["item"].get("category") != "polymarket"]
 
-        # Top trending papers in last 24h, regardless of digest window.
-        trending_paper_rows = storage.get_trending_papers(hours=24, limit=5, min_score=10.0)
+        # Trending papers — aligned to slot window.
+        trending_paper_rows = storage.get_trending_papers(
+            hours=window_hours, limit=5, min_score=10.0,
+        )
         trending_papers = [{"item": p, "type": "post"} for p in trending_paper_rows]
 
-        # Category briefing — like the website's /api/briefing. Wider window
-        # (24h) than the digest itself so the overview stays meaningful even
-        # for the 5-hour midday slot.
+        # Category briefing — aligned to slot window so morning/midday/evening
+        # emails each summarise *their own* time slice instead of a fixed 24h.
         briefing = {"sections": []}
         try:
             posts_by_cat = storage.get_recent_posts_by_category(
-                hours=24, limit_per_category=10,
+                hours=window_hours, limit_per_category=10,
             )
             briefing = ai_processor.generate_daily_briefing(posts_by_cat)
         except Exception as e:

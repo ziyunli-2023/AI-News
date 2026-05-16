@@ -12,6 +12,9 @@ logs/
 *.log
 nohup.out
 
+# Local temp files
+tmp/
+
 # Python
 __pycache__/
 *.pyc

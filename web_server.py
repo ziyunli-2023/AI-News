@@ -118,16 +118,15 @@ def get_news(limit: int = 30, source: str = None, category: str = None):
         _lazy_translate(posts, [])
         return [{"type": "post", "date": p.get("published", ""), "data": p} for p in posts]
 
-    # Trump mode: tweets pinned at top, then news articles.
+    # Trump mode: merge news + X tweets, sort by date (newest first).
     if category == "trump":
         posts  = storage.get_latest_posts_by_category("trump", limit=limit)
         tweets = storage.get_latest_tweets(limit=10, category="trump")
         _lazy_translate(posts, tweets)
-        tweet_items = [{"type": "tweet", "date": t["created_at"], "data": t} for t in tweets]
-        post_items  = [{"type": "post",  "date": p.get("published", ""), "data": p} for p in posts]
-        tweet_items.sort(key=lambda x: x["date"], reverse=True)
-        post_items.sort(key=lambda x: x["date"],  reverse=True)
-        return (tweet_items + post_items)[:limit]
+        items  = [{"type": "tweet", "date": t["created_at"], "data": t} for t in tweets]
+        items += [{"type": "post",  "date": p.get("published", ""), "data": p} for p in posts]
+        items.sort(key=lambda x: x["date"], reverse=True)
+        return items[:limit]
 
     # Polymarket mode: posts only, sorted by fetched_at (most recently refreshed first).
     if category == "polymarket":
@@ -1410,10 +1409,11 @@ def _account_pill_html(sub) -> str:
     import html as _h
     label = sub.name or sub.email.split("@")[0]
     badge = "★" if subscribers.is_paid(sub) else ""
+    badge_html = f' <span style="color:#ca8a04">{badge}</span>' if badge else ''
     return (
         f"<a href='/account' style='{_ACCOUNT_PILL_STYLE}' "
         f"title='查看账号'>👤 <span>{_h.escape(label)}</span>"
-        f"{f' <span style=\"color:#ca8a04\">{badge}</span>' if badge else ''}</a>"
+        f"{badge_html}</a>"
     )
 
 
@@ -1898,13 +1898,50 @@ h1.title { margin: 0; font-size: 22px; font-weight: 700; flex: 1; }
 .news-loading { font-size: 13px; color: var(--muted); padding: 8px 0; }
 .news-empty { font-size: 13px; color: var(--muted); padding: 8px 0; font-style: italic; }
 
+/* dot indicators — hidden on desktop */
+.day-dots { display: none; }
+
 @media (max-width: 720px) {
-  .cal-day { min-height: 70px; padding: 4px; }
-  .cal-day .day-events { gap: 1px; }
-  .evt { font-size: 11px; padding: 2px 5px; }
-  .drawer { width: 100%; }
-  .cal-nav .month-label { font-size: 17px; min-width: 120px; }
-  h1.title { font-size: 19px; }
+  /* compact grid cells — dots only, no text labels */
+  .cal-day { min-height: 52px; padding: 5px 4px; justify-content: flex-start; gap: 2px; }
+  .cal-day .day-head { justify-content: center; }
+  .cal-day .day-count { display: none; }
+  .cal-day .day-events { display: none; }
+  .day-dots { display: flex; gap: 3px; flex-wrap: wrap; justify-content: center; padding: 0 2px; }
+  .day-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .dot-earn   { background: var(--earn); }
+  .dot-ipo    { background: var(--ipo); }
+  .dot-macro-high   { background: var(--macro-hi); }
+  .dot-macro-medium { background: var(--macro-md); }
+  .dot-macro-low    { background: var(--macro-lo); }
+
+  /* drawer as bottom sheet */
+  .drawer {
+    top: auto; bottom: 0; right: 0; left: 0;
+    width: 100vw; max-width: 100vw; max-height: 82vh;
+    border-left: none; border-top: 1px solid var(--border);
+    border-radius: 16px 16px 0 0;
+    transform: translateY(100%);
+    padding: 4px 0 14px;
+  }
+  .drawer.open { transform: translateY(0); }
+  .drawer-head { margin-bottom: 4px; padding: 0 8px 4px; border-bottom: none; }
+  .drawer-head .d-date { font-size: 16px; }
+  .drawer-head .d-close { padding: 0 6px; font-size: 22px; }
+  .drawer-section { margin-bottom: 10px; }
+  .drawer-section h3 { margin: 0 0 4px; padding: 0 8px; font-size: 11px; }
+  .drawer-row { padding: 8px; margin-bottom: 0; border-radius: 0; border-bottom: 1px solid var(--border); background: transparent; }
+  .drawer-row:last-child { border-bottom: none; }
+  .news-list { padding-left: 8px; }
+
+  /* compact topbar */
+  h1.title { font-size: 16px; white-space: nowrap; }
+  .title-sub { display: none; }
+  .cal-nav .month-label { font-size: 17px; min-width: 110px; }
+  .page { padding: 10px 10px; }
+  .topbar { gap: 8px; margin-bottom: 8px; flex-wrap: nowrap; }
+  .back-btn { padding: 6px 10px; font-size: 13px; white-space: nowrap; }
+  .cal-export-btn { padding: 6px 10px; font-size: 13px; white-space: nowrap; }
 }
 </style>
 </head>
@@ -1913,7 +1950,7 @@ h1.title { margin: 0; font-size: 22px; font-weight: 700; flex: 1; }
 <div class="page">
   <div class="topbar">
     <a class="back-btn" href="/">← <span id="t-back">返回主页</span></a>
-    <h1 class="title" id="t-title">📅 财报日历 · Earnings Calendar</h1>
+    <h1 class="title"><span id="t-title">📅 财报日历</span><span class="title-sub" id="t-title-sub"> · Earnings Calendar</span></h1>
     <div class="cal-export" id="calExport">
       <button class="cal-export-btn" onclick="toggleExportMenu(event)">📥 <span id="t-export">添加到日历</span> ▾</button>
       <div class="cal-export-menu" id="exportMenu" onclick="event.stopPropagation()">
@@ -1994,7 +2031,7 @@ h1.title { margin: 0; font-size: 22px; font-weight: 700; flex: 1; }
 <script>
 const L = {
   zh: {
-    back:'返回主页', title:'📅 财报日历 · Earnings Calendar', prev:'上月', next:'下月', today:'今天',
+    back:'返回主页', title:'📅 财报日历', titleSub:' · Earnings Calendar', prev:'上月', next:'下月', today:'今天',
     cap:'最低市值',
     chipEarn:'财报', chipIpo:'IPO', chipMacro:'宏观', chipWatch:'仅热点',
     watchTip:'只显示 watchlist 里的 40 只热门股 (七巨头 / 大科技 / 中概 / Crypto / 金融消费蓝筹)',
@@ -2022,7 +2059,7 @@ const L = {
     sumCapAny:'不限', sumNoTypes:'未选择任何类型',
   },
   en: {
-    back:'Back to home', title:'📅 Earnings Calendar', prev:'Prev', next:'Next', today:'Today',
+    back:'Back to home', title:'📅 Earnings Calendar', titleSub:'', prev:'Prev', next:'Next', today:'Today',
     cap:'Min Mkt Cap',
     chipEarn:'Earnings', chipIpo:'IPO', chipMacro:'Macro', chipWatch:'Watchlist',
     watchTip:'Show only the 40 watchlist tickers (Mag 7 / Big Tech / China ADRs / Crypto / Blue chips)',
@@ -2090,6 +2127,7 @@ function applyLang() {
   document.documentElement.lang = lang;
   $('t-back').textContent = l.back;
   $('t-title').textContent = l.title;
+  $('t-title-sub').textContent = l.titleSub || '';
   $('t-prev').textContent = l.prev;
   $('t-next').textContent = l.next;
   $('t-today').textContent = l.today;
@@ -2414,6 +2452,20 @@ function render() {
       list.appendChild(el('div', { cls: 'evt-more', text: '+ ' + (total - shown) + ' ' + l.more }));
     }
     cell.appendChild(list);
+
+    // mobile: colored dots (CSS hides on desktop)
+    if (total > 0) {
+      const dots = el('div', { cls: 'day-dots' });
+      ev.macro.forEach(m => {
+        const d2 = el('span', { cls: 'day-dot dot-macro-' + (m.impact || 'low') });
+        d2.title = m.title;
+        dots.appendChild(d2);
+      });
+      ev.earnings.slice(0, 5).forEach(() => dots.appendChild(el('span', { cls: 'day-dot dot-earn' })));
+      ev.ipos.slice(0, 3).forEach(() => dots.appendChild(el('span', { cls: 'day-dot dot-ipo' })));
+      cell.appendChild(dots);
+    }
+
     cal.appendChild(cell);
   }
 }
