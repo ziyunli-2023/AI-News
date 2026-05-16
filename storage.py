@@ -214,6 +214,21 @@ def init_db():
                 FOREIGN KEY (subscriber_id) REFERENCES subscribers(id)
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_sub ON sessions(subscriber_id);
+
+            -- Email-based 6-digit verification codes (alternative to magic_links).
+            -- code_hash is HMAC-SHA256(code, LOGIN_CODE_HMAC_KEY) hex — never store
+            -- the raw code. attempts counts wrong submissions; once it reaches
+            -- LOGIN_CODE_MAX_ATTEMPTS the row is invalidated.
+            CREATE TABLE IF NOT EXISTS login_codes (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                email        TEXT NOT NULL,
+                code_hash    TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                expires_at   TEXT NOT NULL,
+                used_at      TEXT,
+                attempts     INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_login_codes_email ON login_codes(email, created_at);
         """)
 
 

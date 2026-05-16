@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="YunFlow")
 
 _CACHE_TTL = 30 * 60  # 30 minutes
-_MARKETS_TTL = 10     # 10 seconds
+_MARKETS_TTL = 30     # 30 seconds (Yahoo only feeds the day-over-day baseline; live ticks come from Pyth on the frontend)
 _markets_cache: dict = {}
 _markets_cache_at: float = 0
 _briefing_cache: dict = {}   # keyed by lang
@@ -173,10 +173,14 @@ def visit_stats():
 
 
 _MARKET_SYMBOLS = [
-    {"symbol": "^IXIC",   "name": "NASDAQ", "name_en": "NASDAQ"},
-    {"symbol": "GC=F",    "name": "GOLD",   "name_en": "Gold"},
-    {"symbol": "CL=F",    "name": "WTI",   "name_en": "WTI"},
-    {"symbol": "BTC-USD", "name": "BTC",   "name_en": "BTC"},
+    {"symbol": "QQQ",       "name": "QQQ",    "name_en": "QQQ"},
+    {"symbol": "SPY",       "name": "SPY",    "name_en": "SPY"},
+    {"symbol": "DIA",       "name": "DOW",    "name_en": "DOW"},
+    {"symbol": "BTC-USD",   "name": "BTC",    "name_en": "BTC"},
+    {"symbol": "GC=F",      "name": "GOLD",   "name_en": "Gold"},
+    {"symbol": "SI=F",      "name": "SILVER", "name_en": "Silver"},
+    {"symbol": "CL=F",      "name": "WTI",    "name_en": "WTI"},
+    {"symbol": "DX-Y.NYB",  "name": "DXY",    "name_en": "DXY"},
 ]
 
 _YF_HEADERS = {
@@ -525,9 +529,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 
   /* ── Market Ticker ── */
-  .market-bar { display: flex; align-items: stretch; gap: 0; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto; scrollbar-width: none; }
-  .market-bar::-webkit-scrollbar { display: none; }
-  .market-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 8px 20px; min-width: 120px; flex: 1; border-right: 1px solid var(--border); cursor: default; transition: background .12s; position: relative; }
+  .market-bar { display: flex; align-items: stretch; gap: 0; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; min-width: 0; }
+  .market-tiles { display: flex; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
+  .market-tiles::-webkit-scrollbar { display: none; }
+  .market-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 8px 18px; flex: 0 0 auto; min-width: 110px; border-right: 1px solid var(--border); cursor: default; transition: background .12s; position: relative; scroll-snap-align: start; }
   .market-tile:last-child { border-right: none; }
   .market-tile:hover { background: var(--surface2); }
   .market-tile-name { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 2px; }
@@ -536,12 +541,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .market-up   { color: var(--green); }
   .market-down { color: var(--red); }
   .market-flat { color: var(--muted); }
-  .market-bar-footer { font-size: 10px; color: var(--muted); padding: 0 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; flex-shrink: 0; }
+  .market-bar-footer { font-size: 10px; color: var(--muted); padding: 0 12px; display: flex; align-items: center; gap: 6px; white-space: nowrap; flex-shrink: 0; border-left: 1px solid var(--border); }
   .market-refresh-btn { background: none; border: none; color: var(--muted); font-size: 12px; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
   .market-refresh-btn:hover { color: var(--accent); }
   @media (max-width: 719px) {
-    .market-bar { overflow-x: hidden; }
-    .market-tile { padding: 6px 4px; flex: 0 0 25%; min-width: 0; border-right: 1px solid var(--border); }
+    .market-tile { padding: 6px 12px; min-width: 88px; }
     .market-tile-name { font-size: 10px; }
     .market-tile-price { font-size: 13px; letter-spacing: -.03em; }
     .market-tile-change { font-size: 10px; }
@@ -611,10 +615,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <!-- Market Ticker -->
     <div class="market-bar" id="marketBar">
-      <div class="market-tile" id="mkt-IXIC"><div class="market-tile-name">NASDAQ</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
-      <div class="market-tile" id="mkt-GC"><div class="market-tile-name">GOLD</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
-      <div class="market-tile" id="mkt-CL"><div class="market-tile-name">WTI</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
-      <div class="market-tile" id="mkt-BTC"><div class="market-tile-name">BTC</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+      <div class="market-tiles" id="marketTiles">
+        <div class="market-tile" id="mkt-QQQ"><div class="market-tile-name">QQQ</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+        <div class="market-tile" id="mkt-SPY"><div class="market-tile-name">SPY</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+        <div class="market-tile" id="mkt-DIA"><div class="market-tile-name">DOW</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+        <div class="market-tile" id="mkt-BTC"><div class="market-tile-name">BTC</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+        <div class="market-tile" id="mkt-XAU"><div class="market-tile-name">GOLD</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+        <div class="market-tile" id="mkt-XAG"><div class="market-tile-name">SILVER</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+        <div class="market-tile" id="mkt-WTI"><div class="market-tile-name">WTI</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+        <div class="market-tile" id="mkt-DXY"><div class="market-tile-name">DXY</div><div class="market-tile-price">—</div><div class="market-tile-change market-flat">—</div></div>
+      </div>
       <div class="market-bar-footer"><span id="marketUpdated"></span><button class="market-refresh-btn" onclick="loadMarkets()" title="刷新">↻</button></div>
     </div>
 
@@ -1347,36 +1357,104 @@ function scrollToTop() {
 }
 
 // ── Markets ───────────────────────────────────────────────────────────────
+// Yahoo (/api/markets) supplies prev-close baseline (one call per refresh) for change%.
+// Pyth Hermes SSE streams sub-second ticks for live price; change/pct is recomputed
+// against Yahoo's prev-close so the displayed delta stays day-over-day.
+// Note: gold/silver baselines use Yahoo futures (GC=F/SI=F) while Pyth streams XAU/XAG spot —
+// the futures premium (~0.5-1.5%) is rolled into the displayed change.
 const MARKET_ID_MAP = {
-  '^IXIC': 'IXIC', 'GC=F': 'GC', 'CL=F': 'CL', 'BTC-USD': 'BTC'
+  // Yahoo symbol -> tile id
+  'QQQ':      'QQQ',
+  'SPY':      'SPY',
+  'DIA':      'DIA',
+  'BTC-USD':  'BTC',
+  'GC=F':     'XAU',
+  'SI=F':     'XAG',
+  'CL=F':     'WTI',
+  'DX-Y.NYB': 'DXY',
 };
+const PYTH_FEEDS = {
+  // tile id -> Pyth feed id (no 0x prefix)
+  'QQQ': '9695e2b96ea7b3859da9ed25b7a46a920a776e2fdae19a7bcfdf2b219230452d',
+  'SPY': '19e09bb805456ada3979a7d1cbb4b6d63babc3a0f8e8a9509f68afa5c4c11cd5',
+  'DIA': '57cff3a9a4d4c87b595a2d1bd1bac0240400a84677366d632ab838bbbe56f763',
+  'BTC': 'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+  'XAU': '765d2ba906dbc32ca17cc11f5310a89e9ee1f6420508c63861f2f8ba4ee34bb2',
+  'XAG': 'f2fb02c32b055c805e7238d628e5e9dadef274376114eb1f012337cabe93871e',
+  'WTI': '925ca92ff005ae943c158e3563f59698ce7e75c5a8c8dd43303a0a154887b3e6',
+  'DXY': '710afe0041a07156bfd71971160c78a326bf8121403e0d4e140d06bea0353b7f',
+};
+const PYTH_ID_TO_TILE = Object.fromEntries(Object.entries(PYTH_FEEDS).map(([k,v]) => [v, k]));
+const marketBaseline = {};  // tile id -> { prevClose }
+let marketUpdatedEl = null;
+
+function renderTile(tileId, price, prevClose) {
+  const tile = document.getElementById('mkt-' + tileId);
+  if (!tile) return;
+  const [, priceEl, changeEl] = tile.children;
+  const isBTC = tileId === 'BTC';
+  priceEl.textContent = isBTC
+    ? price.toLocaleString('en-US', {maximumFractionDigits: 0})
+    : price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  if (prevClose != null && prevClose !== 0) {
+    const change = price - prevClose;
+    const pct = change / prevClose * 100;
+    const up = change >= 0;
+    const sign = up ? '+' : '';
+    const chAbs = Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const chPct = sign + pct.toFixed(2) + '%';
+    changeEl.textContent = sign + chAbs + ' (' + chPct + ')';
+    changeEl.className = 'market-tile-change ' + (up ? 'market-up' : 'market-down');
+  }
+  if (!marketUpdatedEl) marketUpdatedEl = document.getElementById('marketUpdated');
+  if (marketUpdatedEl) {
+    const now = new Date();
+    marketUpdatedEl.textContent = now.toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US', {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+  }
+}
+
 async function loadMarkets() {
   try {
     const data = await fetch('/api/markets').then(r => r.json());
     data.forEach(m => {
       const id = MARKET_ID_MAP[m.symbol];
-      if (!id) return;
-      const tile = document.getElementById('mkt-' + id);
-      if (!tile) return;
-      const [nameEl, priceEl, changeEl] = tile.children;
-      if (m.price !== null && m.price !== undefined) {
-        const isBTC = m.symbol === 'BTC-USD';
-        priceEl.textContent = isBTC
-          ? m.price.toLocaleString('en-US', {maximumFractionDigits: 0})
-          : m.price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-        const up = m.change >= 0;
-        const sign = up ? '+' : '';
-        const chAbs = Math.abs(m.change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-        const chPct = (up ? '+' : '') + (m.pct !== null ? m.pct.toFixed(2) : '0.00') + '%';
-        changeEl.textContent = sign + chAbs + ' (' + chPct + ')';
-        changeEl.className = 'market-tile-change ' + (up ? 'market-up' : 'market-down');
-      }
+      if (!id || m.price == null) return;
+      const prevClose = (m.change != null) ? (m.price - m.change) : null;
+      if (prevClose != null) marketBaseline[id] = { prevClose };
+      renderTile(id, m.price, prevClose);
     });
-    const now = new Date();
-    const ts = now.toLocaleTimeString(lang === 'zh' ? 'zh-CN' : 'en-US', {hour: '2-digit', minute: '2-digit', second: '2-digit'});
-    const el = document.getElementById('marketUpdated');
-    if (el) el.textContent = ts;
   } catch(e) { /* silently ignore */ }
+}
+
+let pythSource = null;
+let pythReconnectTimer = null;
+function connectPyth() {
+  if (pythSource) { try { pythSource.close(); } catch(e) {} pythSource = null; }
+  const ids = Object.values(PYTH_FEEDS).map(id => 'ids[]=' + id).join('&');
+  const url = 'https://hermes.pyth.network/v2/updates/price/stream?' + ids;
+  const es = new EventSource(url);
+  pythSource = es;
+  es.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (!msg.parsed) return;
+      msg.parsed.forEach(p => {
+        const tileId = PYTH_ID_TO_TILE[p.id];
+        if (!tileId) return;
+        const expo = p.price.expo;
+        const price = Number(p.price.price) * Math.pow(10, expo);
+        if (!isFinite(price) || price <= 0) return;
+        const base = marketBaseline[tileId];
+        renderTile(tileId, price, base ? base.prevClose : null);
+      });
+    } catch(e) { /* ignore parse errors */ }
+  };
+  es.onerror = () => {
+    try { es.close(); } catch(e) {}
+    pythSource = null;
+    if (pythReconnectTimer) clearTimeout(pythReconnectTimer);
+    pythReconnectTimer = setTimeout(connectPyth, 5000);
+  };
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -1384,7 +1462,8 @@ connectWS(); loadBriefing(); loadDigest();
 setInterval(updateStats, 60000);
 setInterval(loadBriefing, 30 * 60 * 1000);
 loadMarkets();
-setInterval(loadMarkets, 10000);
+setInterval(loadMarkets, 30000);  // Yahoo refresh: day-over-day prev-close baseline
+connectPyth();                     // Pyth SSE: sub-second live ticks for all 8 instruments
 loadNews();
 </script>
 </body>
@@ -1437,6 +1516,7 @@ def api_earnings_calendar(
     include_earnings: int = 1,
     include_ipos: int = 1,
     include_macro: int = 1,
+    sub=Depends(auth.require_subscriber),
 ):
     """Return {date: {earnings, ipos, macro}} for [start, end] (YYYY-MM-DD)."""
     if min_cap_m is None:
@@ -2704,7 +2784,7 @@ reload();
 
 
 @app.get("/earnings", response_class=HTMLResponse)
-def earnings_page():
+def earnings_page(sub=Depends(auth.require_subscriber)):
     storage.record_visit()
     return HTMLResponse(content=EARNINGS_HTML)
 
@@ -2836,29 +2916,155 @@ def _clear_session_cookie(response: Response) -> None:
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, next: str = "/", sent: int = 0, err: str = ""):
-    """Render the email-entry form. `sent=1` shows the 'check your email' panel."""
+def login_page(request: Request, next: str = "/", sent: int = 0,
+               err: str = "", tab: str = "link", email: str = ""):
+    """Render the login page with Tab toggle between Magic Link and verification code.
+
+    Query params:
+      tab=link|code   which tab is active (default 'link')
+      sent=1          show the post-submit panel ("check your email" or
+                      "enter the 6-digit code" depending on tab)
+      email=...       pre-fill the email input on the code tab after request-code
+      err=...         shows a red error banner
+      next=...        post-login redirect target
+    """
     # If already logged in, send them to the dashboard
     if auth.current_subscriber(request):
         return _redirect("/")
 
     import html as _h
     next_safe = _h.escape(next or "/")
-    sent_panel = (
-        """<div style='background:#dcfce7;border:1px solid #86efac;color:#166534;
-              padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;
-              line-height:1.6;'>
-            ✓ 如果该邮箱在订阅名单中,登录链接已发送。请查收邮件
-            (15 分钟内有效)。
-          </div>"""
-        if sent else ""
-    )
+    email_safe = _h.escape(email or "")
+    active_tab = "code" if tab == "code" else "link"
+
     err_panel = (
         f"<div style='background:#fee2e2;border:1px solid #fca5a5;color:#991b1b;"
         f"padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;'>"
         f"⚠ {_h.escape(err)}</div>"
         if err else ""
     )
+
+    link_sent_panel = (
+        """<div style='background:#dcfce7;border:1px solid #86efac;color:#166534;
+              padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;
+              line-height:1.6;'>
+            ✓ 如果该邮箱在订阅名单中,登录链接已发送。请查收邮件
+            (15 分钟内有效)。
+          </div>"""
+        if sent and active_tab == "link" else ""
+    )
+    code_sent_panel = (
+        f"""<div style='background:#dcfce7;border:1px solid #86efac;color:#166534;
+              padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;
+              line-height:1.6;'>
+            ✓ 如果该邮箱在订阅名单中,6 位数字验证码已发送
+            ({config.LOGIN_CODE_TTL_MINUTES} 分钟内有效)。请在下方输入。
+          </div>"""
+        if sent and active_tab == "code" else ""
+    )
+
+    # Tabs — switching is done via plain links so JS isn't required.
+    def _tab_style(active: bool) -> str:
+        if active:
+            return ("flex:1;padding:10px 0;text-align:center;font-size:14px;"
+                    "font-weight:600;color:#0f3460;background:#fff;"
+                    "border-bottom:2px solid #0f3460;text-decoration:none;")
+        return ("flex:1;padding:10px 0;text-align:center;font-size:14px;"
+                "font-weight:500;color:#888;background:#f9fafb;"
+                "border-bottom:2px solid transparent;text-decoration:none;")
+    tab_link_href = f"/login?tab=link&next={_h.escape(next or '/')}"
+    tab_code_href = f"/login?tab=code&next={_h.escape(next or '/')}"
+    link_tab_style = _tab_style(active_tab == "link")
+    code_tab_style = _tab_style(active_tab == "code")
+    tabs_html = (
+        f"<div style='display:flex;margin:0 -32px 24px;border-bottom:1px solid #eee;'>"
+        f"<a href='{tab_link_href}' style='{link_tab_style}'>邮件链接</a>"
+        f"<a href='{tab_code_href}' style='{code_tab_style}'>验证码</a>"
+        f"</div>"
+    )
+
+    # ── Tab 1: Magic Link ──
+    link_form = f"""
+    <form method='post' action='/auth/request-link' style='margin:0;'>
+      <input type='hidden' name='next' value='{next_safe}'>
+      <input type='email' name='email' required autocomplete='email'
+             placeholder='your@email.com'
+             {"autofocus" if active_tab == "link" else ""}
+             style='display:block;width:100%;box-sizing:border-box;
+                    padding:12px 14px;font-size:14px;border:1px solid #d1d5db;
+                    border-radius:8px;margin-bottom:14px;'>
+      <button type='submit'
+              style='display:block;width:100%;padding:12px;font-size:14px;
+                     color:#fff;background:#0f3460;border:none;border-radius:8px;
+                     font-weight:600;cursor:pointer;'>
+        发送登录链接
+      </button>
+    </form>
+    <p style='margin:16px 0 0;font-size:12px;color:#888;line-height:1.5;'>
+      链接 {config.MAGIC_LINK_TTL_MINUTES} 分钟内有效,点击即可登录。
+    </p>"""
+
+    # ── Tab 2: Verification code (two-step) ──
+    if sent and active_tab == "code" and email_safe:
+        # Step 2: code entry form, email is already locked in.
+        code_form = f"""
+    <form method='post' action='/auth/verify-code' style='margin:0;'>
+      <input type='hidden' name='next' value='{next_safe}'>
+      <input type='hidden' name='email' value='{email_safe}'>
+      <div style='font-size:13px;color:#666;margin-bottom:10px;'>
+        验证码已发送至 <b style='color:#0f3460;'>{email_safe}</b>
+      </div>
+      <input type='text' name='code' required autofocus
+             inputmode='numeric' pattern='[0-9]{{6}}' maxlength='6'
+             autocomplete='one-time-code'
+             placeholder='6 位数字'
+             style='display:block;width:100%;box-sizing:border-box;
+                    padding:12px 14px;font-size:18px;letter-spacing:6px;
+                    text-align:center;border:1px solid #d1d5db;
+                    border-radius:8px;margin-bottom:14px;
+                    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'>
+      <button type='submit'
+              style='display:block;width:100%;padding:12px;font-size:14px;
+                     color:#fff;background:#0f3460;border:none;border-radius:8px;
+                     font-weight:600;cursor:pointer;'>
+        登录
+      </button>
+    </form>
+    <form method='post' action='/auth/request-code' style='margin:12px 0 0;'>
+      <input type='hidden' name='next' value='{next_safe}'>
+      <input type='hidden' name='email' value='{email_safe}'>
+      <button type='submit'
+              style='display:block;width:100%;padding:8px;font-size:12px;
+                     color:#666;background:transparent;border:none;
+                     cursor:pointer;text-decoration:underline;'>
+        重新发送验证码
+      </button>
+    </form>"""
+    else:
+        # Step 1: email entry → triggers code send.
+        code_form = f"""
+    <form method='post' action='/auth/request-code' style='margin:0;'>
+      <input type='hidden' name='next' value='{next_safe}'>
+      <input type='email' name='email' required autocomplete='email'
+             placeholder='your@email.com'
+             {"autofocus" if active_tab == "code" else ""}
+             value='{email_safe}'
+             style='display:block;width:100%;box-sizing:border-box;
+                    padding:12px 14px;font-size:14px;border:1px solid #d1d5db;
+                    border-radius:8px;margin-bottom:14px;'>
+      <button type='submit'
+              style='display:block;width:100%;padding:12px;font-size:14px;
+                     color:#fff;background:#0f3460;border:none;border-radius:8px;
+                     font-weight:600;cursor:pointer;'>
+        发送验证码
+      </button>
+    </form>
+    <p style='margin:16px 0 0;font-size:12px;color:#888;line-height:1.5;'>
+      6 位数字验证码, {config.LOGIN_CODE_TTL_MINUTES} 分钟内有效。
+    </p>"""
+
+    active_form = code_form if active_tab == "code" else link_form
+    active_sent_panel = code_sent_panel if active_tab == "code" else link_sent_panel
 
     return f"""<!DOCTYPE html>
 <html lang='zh'><head>
@@ -2873,24 +3079,12 @@ def login_page(request: Request, next: str = "/", sent: int = 0, err: str = ""):
     <h1 style='margin:0 0 8px;font-size:22px;color:#0f3460;'>看牛韵新闻</h1>
     <p style='margin:0 0 24px;font-size:14px;color:#666;line-height:1.6;'>
       会员专享:AI 板块轮动 dashboard、关键词智能匹配新闻、未来研究工具。
-      输入邮箱接收一次性登录链接,无需密码。
+      输入邮箱即可登录,无需密码。
     </p>
-    {sent_panel}
+    {tabs_html}
+    {active_sent_panel}
     {err_panel}
-    <form method='post' action='/auth/request-link' style='margin:0;'>
-      <input type='hidden' name='next' value='{next_safe}'>
-      <input type='email' name='email' required autofocus autocomplete='email'
-             placeholder='your@email.com'
-             style='display:block;width:100%;box-sizing:border-box;
-                    padding:12px 14px;font-size:14px;border:1px solid #d1d5db;
-                    border-radius:8px;margin-bottom:14px;'>
-      <button type='submit'
-              style='display:block;width:100%;padding:12px;font-size:14px;
-                     color:#fff;background:#0f3460;border:none;border-radius:8px;
-                     font-weight:600;cursor:pointer;'>
-        发送登录链接
-      </button>
-    </form>
+    {active_form}
     <p style='margin:24px 0 0;font-size:12px;color:#999;line-height:1.5;
               border-top:1px solid #eee;padding-top:16px;'>
       仅限受邀订阅者。如未收到邮件,请确认邮箱拼写或联系管理员。
@@ -2932,6 +3126,64 @@ def verify_magic_link(request: Request, token: str, next: str = "/"):
     if not email:
         return _redirect("/login?err=" + "链接无效或已过期，请重新申请")
     sub = subscribers.get_by_email(email)
+    if not sub or sub.status != "active":
+        return _redirect("/login?err=" + "账号不存在或已暂停")
+    session_id = subscribers.create_session(sub.id)
+    target = next if (next and next.startswith("/")) else "/"
+    response = _redirect(target)
+    _set_session_cookie(response, session_id)
+    return response
+
+
+@app.post("/auth/request-code")
+def request_login_code(
+    request: Request,
+    email: str = Form(...),
+    next: str = Form("/"),
+):
+    """Issue a 6-digit verification code to the given email.
+
+    Anti-enumeration: always redirect to the verify step regardless of
+    whether the email exists, is inactive, or is in cooldown. The
+    `email` arg is echoed back in the URL so the verify form is pre-filled.
+    """
+    from urllib.parse import quote
+    email = (email or "").strip().lower()
+    sub = subscribers.get_by_email(email) if email else None
+    if sub and sub.status == "active":
+        try:
+            code = subscribers.create_login_code(email)
+            auth.send_login_code_email(email, code)
+        except subscribers.LoginCodeCooldownError:
+            # Treat as success from the caller's perspective; the existing
+            # code is still valid, user should check their inbox.
+            logger.info("Login code cooldown for %s — skipping resend", email)
+        except Exception as e:
+            logger.error("Failed to send login code to %s: %s", email, e)
+    else:
+        logger.info("Login code requested for unknown/inactive email: %s", email)
+    next_q = f"&next={quote(next)}" if next and next != "/" else ""
+    return _redirect(f"/login?tab=code&email={quote(email)}&sent=1{next_q}")
+
+
+@app.post("/auth/verify-code")
+def verify_login_code(
+    request: Request,
+    email: str = Form(...),
+    code: str = Form(...),
+    next: str = Form("/"),
+):
+    """Validate a submitted code, issue a session, set cookie, redirect."""
+    from urllib.parse import quote
+    email = (email or "").strip().lower()
+    verified_email = subscribers.consume_login_code(email, code)
+    if not verified_email:
+        next_q = f"&next={quote(next)}" if next and next != "/" else ""
+        return _redirect(
+            f"/login?tab=code&email={quote(email)}&sent=1{next_q}"
+            f"&err=验证码错误或已过期，请重试"
+        )
+    sub = subscribers.get_by_email(verified_email)
     if not sub or sub.status != "active":
         return _redirect("/login?err=" + "账号不存在或已暂停")
     session_id = subscribers.create_session(sub.id)

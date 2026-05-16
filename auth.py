@@ -91,6 +91,38 @@ def send_magic_link_email(email: str, token: str, next_path: str = "/") -> None:
     _send_smtp(email, "看牛韵新闻 · 登录链接", html, text)
 
 
+def send_login_code_email(email: str, code: str) -> None:
+    """Email a 6-digit verification code (alternative to Magic Link)."""
+    ttl = config.LOGIN_CODE_TTL_MINUTES
+    # Display the code as "123 456" for easier reading.
+    code_spaced = f"{code[:3]} {code[3:]}" if len(code) == 6 else code
+    html = f"""<html><body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+  max-width:520px;margin:auto;padding:32px;background:#fff;color:#222;'>
+  <div style='background:#0f3460;color:#fff;padding:18px 22px;border-radius:10px 10px 0 0;'>
+    <h1 style='margin:0;font-size:18px;'>看牛韵新闻 · 登录验证码</h1>
+  </div>
+  <div style='padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px;'>
+    <p style='font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;'>
+      你的登录验证码,请在 <b>{ttl} 分钟内</b>使用,且只能使用一次。
+    </p>
+    <div style='margin:24px 0;text-align:center;'>
+      <span style='display:inline-block;font-size:32px;letter-spacing:8px;
+                   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                   color:#0f3460;background:#f4f6fb;padding:18px 28px;
+                   border-radius:10px;font-weight:700;'>{code_spaced}</span>
+    </div>
+    <p style='font-size:12px;color:#888;line-height:1.5;margin:16px 0 0;'>
+      在登录页面输入上述 6 位数字即可完成登录。
+    </p>
+    <p style='font-size:12px;color:#aaa;margin:24px 0 0;border-top:1px solid #eee;padding-top:16px;'>
+      如果你没有请求登录,可以忽略这封邮件,你的账号是安全的。
+    </p>
+  </div>
+</body></html>"""
+    text = f"看牛韵新闻 — 登录验证码 ({ttl} 分钟内有效): {code}\n"
+    _send_smtp(email, "看牛韵新闻 · 登录验证码", html, text)
+
+
 def send_welcome_email(email: str, name: str, token: str) -> None:
     """Welcome a newly invited subscriber with their first Magic Link."""
     url = _magic_link_url(token, "/account")

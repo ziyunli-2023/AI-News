@@ -257,6 +257,15 @@ SESSION_COOKIE_NAME     = os.getenv("SESSION_COOKIE_NAME", "yunflow_session")
 SESSION_TTL_DAYS        = int(os.getenv("SESSION_TTL_DAYS", "30"))
 MAGIC_LINK_TTL_MINUTES  = int(os.getenv("MAGIC_LINK_TTL_MINUTES", "15"))
 
+# Email verification code (alternative to Magic Link).
+# Code is 6 numeric digits, stored as HMAC-SHA256(code, LOGIN_CODE_HMAC_KEY).
+# LOGIN_CODE_HMAC_KEY MUST be set in prod — falls back to EMAIL_APP_PASSWORD
+# so existing deployments don't need a new env var, but explicit is better.
+LOGIN_CODE_TTL_MINUTES      = int(os.getenv("LOGIN_CODE_TTL_MINUTES", "10"))
+LOGIN_CODE_MAX_ATTEMPTS     = int(os.getenv("LOGIN_CODE_MAX_ATTEMPTS", "5"))
+LOGIN_CODE_COOLDOWN_SECONDS = int(os.getenv("LOGIN_CODE_COOLDOWN_SECONDS", "60"))
+LOGIN_CODE_HMAC_KEY         = os.getenv("LOGIN_CODE_HMAC_KEY", "") or os.getenv("EMAIL_APP_PASSWORD", "")
+
 # ── Earnings calendar (Finnhub) ────────────────────────────────────────────
 # Free tier: 60 req/min. Earnings + IPO calendars are free; economic calendar is paid.
 # Get a key at https://finnhub.io/dashboard (free signup).

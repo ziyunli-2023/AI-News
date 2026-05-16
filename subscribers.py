@@ -15,6 +15,8 @@ Key concepts
 - Session              : 30-day cookie-keyed login, issued after magic-link verify.
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import secrets
@@ -197,6 +199,114 @@ def consume_magic_link(token: str) -> Optional[str]:
         if cur.rowcount != 1:
             return None  # someone else just consumed it
         return row["email"]
+
+
+# ── Login codes (email-based 6-digit verification code) ───────────────────
+#
+# Alternative to magic links: email a 6-digit code, user types it back. We
+# store HMAC-SHA256(code, LOGIN_CODE_HMAC_KEY) so a DB leak doesn't reveal
+# live codes. Codes are short-lived (config.LOGIN_CODE_TTL_MINUTES) and
+# bounded to LOGIN_CODE_MAX_ATTEMPTS wrong submissions per code.
+
+class LoginCodeCooldownError(Exception):
+    """Raised by create_login_code when a code was sent too recently."""
+
+
+def _hash_code(code: str) -> str:
+    key = (config.LOGIN_CODE_HMAC_KEY or "").encode("utf-8")
+    return hmac.new(key, code.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def create_login_code(email: str) -> str:
+    """Generate a 6-digit code for `email`. Caller emails it.
+
+    Raises LoginCodeCooldownError if a code was issued for the same email
+    within the last config.LOGIN_CODE_COOLDOWN_SECONDS — prevents email
+    spamming. The most recent un-used code for this email is also marked
+    used, so only one live code exists at a time.
+    """
+    email = email.lower().strip()
+    if not email:
+        raise ValueError("email is required")
+    now = datetime.now()
+    cooldown_cutoff = (now - timedelta(seconds=config.LOGIN_CODE_COOLDOWN_SECONDS)
+                       ).isoformat(timespec="seconds")
+    with get_conn() as conn:
+        recent = conn.execute(
+            """SELECT created_at FROM login_codes
+               WHERE email = ? AND created_at > ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (email, cooldown_cutoff)
+        ).fetchone()
+        if recent:
+            raise LoginCodeCooldownError(
+                f"a code was sent within the last "
+                f"{config.LOGIN_CODE_COOLDOWN_SECONDS}s"
+            )
+        # Invalidate any prior live codes for this email so only the newest
+        # one works. Otherwise an attacker could keep multiple in flight.
+        conn.execute(
+            "UPDATE login_codes SET used_at = ? "
+            "WHERE email = ? AND used_at IS NULL",
+            (now.isoformat(timespec="seconds"), email)
+        )
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        expires = now + timedelta(minutes=config.LOGIN_CODE_TTL_MINUTES)
+        conn.execute(
+            """INSERT INTO login_codes (email, code_hash, created_at, expires_at)
+               VALUES (?, ?, ?, ?)""",
+            (email, _hash_code(code),
+             now.isoformat(timespec="seconds"),
+             expires.isoformat(timespec="seconds"))
+        )
+    return code
+
+
+def consume_login_code(email: str, code: str) -> Optional[str]:
+    """Validate a 6-digit code for `email`. Returns email on success, else None.
+
+    On mismatch, increments the attempt counter on the latest live code; once
+    it reaches LOGIN_CODE_MAX_ATTEMPTS the row is invalidated so the user must
+    request a fresh code.
+    """
+    email = (email or "").lower().strip()
+    code = (code or "").strip()
+    if not email or not code or len(code) != 6 or not code.isdigit():
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT id, code_hash, expires_at, used_at, attempts
+               FROM login_codes
+               WHERE email = ? AND used_at IS NULL
+               ORDER BY created_at DESC LIMIT 1""",
+            (email,)
+        ).fetchone()
+        if not row:
+            return None
+        if row["expires_at"] < _now():
+            return None
+        submitted_hash = _hash_code(code)
+        if not hmac.compare_digest(submitted_hash, row["code_hash"]):
+            new_attempts = row["attempts"] + 1
+            if new_attempts >= config.LOGIN_CODE_MAX_ATTEMPTS:
+                # Burn the code — too many wrong tries
+                conn.execute(
+                    "UPDATE login_codes SET attempts = ?, used_at = ? WHERE id = ?",
+                    (new_attempts, _now(), row["id"])
+                )
+            else:
+                conn.execute(
+                    "UPDATE login_codes SET attempts = ? WHERE id = ?",
+                    (new_attempts, row["id"])
+                )
+            return None
+        cur = conn.execute(
+            "UPDATE login_codes SET used_at = ? WHERE id = ? AND used_at IS NULL",
+            (_now(), row["id"])
+        )
+        if cur.rowcount != 1:
+            return None
+        return email
 
 
 # ── Sessions ───────────────────────────────────────────────────────────────
