@@ -10,6 +10,7 @@ news.db
 # Logs
 logs/
 *.log
+nohup.out
 
 # Python
 __pycache__/
