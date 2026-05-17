@@ -239,6 +239,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DB_PATH = "news.db"
 
 # ── Email notifications (Gmail SMTP) ───────────────────────────────────────
+EMAIL_ENABLED      = os.getenv("EMAIL_ENABLED", "true").lower() == "true"
 EMAIL_SENDER       = os.getenv("EMAIL_SENDER", "")        # your Gmail address
 EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")  # Gmail App Password
 # Comma-separated list of recipients, e.g. "a@x.com,b@x.com"

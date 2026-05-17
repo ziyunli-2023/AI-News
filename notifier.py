@@ -262,6 +262,9 @@ class EmailNotifier:
 
     def _try_send_slot(self, date_str: str, slot_hour: int, slot_time: datetime, label: str):
         """Build and send digest for one slot; returns True on success."""
+        if not config.EMAIL_ENABLED:
+            logger.info("Email paused (EMAIL_ENABLED=false) — skipping digest slot %02d:00", slot_hour)
+            return False
         window_hours = SEND_WINDOWS[slot_hour]
         batch = self._build_batch(slot_time, window_hours)
 
@@ -361,7 +364,7 @@ class EmailNotifier:
 
     def send_alert(self, post: dict):
         """Send an immediate single-post alert email (bypasses digest queue)."""
-        if not config.EMAIL_SENDER or not config.EMAIL_APP_PASSWORD:
+        if not config.EMAIL_ENABLED or not config.EMAIL_SENDER or not config.EMAIL_APP_PASSWORD:
             return
         try:
             self._send_alert_email(post)
